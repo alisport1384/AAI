@@ -146,10 +146,11 @@ object PriceStatsCalculator {
         val min = prices.min()
         val max = prices.max()
         val median = Similarity.median(prices) ?: return null
-        val percentile = reference?.let { ref ->
-            val below = prices.count { it <= ref }
+        // A percentile from a single observation is meaningless: report "unknown" instead of a fake 1.0.
+        val percentile = if (reference != null && prices.size >= 2) {
+            val below = prices.count { it <= reference }
             (below.toDouble() / prices.size).coerceIn(0.0, 1.0)
-        }
+        } else null
         return PriceStats(count = prices.size, min = min, median = median, max = max, percentile = percentile)
     }
 }
