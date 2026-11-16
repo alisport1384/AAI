@@ -61,6 +61,30 @@ interface AgentTools {
 
     /** "سریع / متعادل / عمیق" — comes from user preferences. */
     fun researchBudget(): ResearchBudget
+
+    // ---- v0.5: learning from answered questions (see Learning.kt) ----
+
+    /** An answered question that can be reused for a similar question while it is still fresh. */
+    fun caseFind(model: QuestionModel, question: String): QaCase?
+    fun caseLearn(model: QuestionModel, question: String, answer: String, source: Evidence?)
+    fun caseTouch(id: String)
+    fun casesAll(limit: Int): List<QaCase>
+
+    /** Which query worked before, for which topic. */
+    fun playbookRecord(topicKey: String, query: String, won: Boolean)
+    fun playbookBest(topicKey: String, limit: Int): List<PlayEntry>
+    fun playbookRefusals(topicKey: String): Int
+
+    /** Which sources answered before (tie-break only). */
+    fun domainFactor(domain: String): Double
+    fun domainRecord(domain: String, won: Boolean)
+
+    // ---- v0.5: the plan the assistant works through without being asked ----
+
+    fun researchPlan(): ResearchPlan
+    fun planProgress(): PlanProgress
+    fun planProgressSave(progress: PlanProgress)
+    fun proactiveBudget(): ProactiveBudget
 }
 
 /**
@@ -184,6 +208,35 @@ class Agent(
             return AgentOutcome(phraser.render(draft).copy(trace = steps.map { it.tool }), steps, actions)
         }
 
+        // ---- 3.5 the case store: this exact question (or a close one) was answered before ----
+        val model = QuestionReader.read(question, langTag)
+        val cached = tools.caseFind(model, question)
+        if (cached != null) {
+            tools.caseTouch(cached.id)
+            step(
+                "پروندهٔ پاسخ قبلی پیدا شد", "case.reuse",
+                mapOf("ask" to model.ask.name, "hits" to cached.hits.toString()),
+                "پاسخ از ${Jalali.format(cached.lastVerifiedAt)} — بدون جستجوی تازه"
+            )
+            actions.add("case.hit:${cached.id}")
+            val draft = AnswerDraft(
+                intent = "case.reuse",
+                headline = if (langTag == "en") {
+                    "Answer: ${cached.answer} — from the case file (checked ${Jalali.format(cached.lastVerifiedAt)}, source ${cached.domain})"
+                } else {
+                    "پاسخ: ${cached.answer} — از پروندهٔ قبلی (بازبینی ${Jalali.format(cached.lastVerifiedAt)}، منبع ${cached.domain})"
+                },
+                facts = listOf(Fact("C1", cached.question.take(200))),
+                citations = if (cached.url.isNotBlank()) listOf(Citation("C1", cached.domain, cached.url)) else emptyList(),
+                missing = emptyList(),
+                confidence = 0.72,
+                refused = false,
+                lang = langTag
+            )
+            tools.logAppend("answer", "agent", "case-reuse", "q=${question.take(120)} hits=${cached.hits}")
+            return AgentOutcome(phraser.render(draft).copy(trace = steps.map { it.tool }, actions = actions), steps, actions)
+        }
+
         // ---- 4. knowledge already acquired by the assistant ----
         val known = tools.knowledgeAnswerable(question, 5)
         val stale = known.filter { KnowledgeBank.isStale(it, now) }
@@ -210,7 +263,8 @@ class Agent(
             langTag = langTag,
             pack = pack,
             known = known,
-            budget = tools.researchBudget(),
+            // Same topic refused before? Go deeper instead of repeating the same shallow search.
+            budget = StudyDepth.escalate(tools.researchBudget(), tools.playbookRefusals(KnowledgeBank.topicKey(question))),
             reason = if (known.isEmpty()) "دانشی ذخیره نشده بود" else "دانش موجود کهنه یا ناکافی بود (پوشش ${pct(coverage)})",
             steps = steps,
             actions = actions,
@@ -369,6 +423,24 @@ class Agent(
             answer = answer.copy(learned = emptyList())
         }
         answer = answer.copy(trace = steps.map { "${it.index}. ${it.tool}" }, actions = actions)
+
+        // ---- learn from this answer so the next similar question is faster and better ----
+        val qModel = QuestionReader.read(target, langTag)
+        val topic = KnowledgeBank.topicKey(target)
+        val winningQuery = outcome.queries.lastOrNull()
+        if (plan != null && plan.answered) {
+            tools.caseLearn(qModel, target, plan.direct!!, plan.source)
+            actions.add("case.learn:${CaseStore.id(target, qModel.ask)}")
+            if (winningQuery != null) tools.playbookRecord(topic, winningQuery, true)
+            plan.source?.page?.url?.let { tools.domainRecord(KnowledgeBank.draftHost(it), true) }
+            learned.add(
+                if (langTag == "en") "this answer is now a case: next time it needs no search"
+                else "این پاسخ به‌عنوان پرونده ذخیره شد: بار بعد جستجوی تازه لازم نیست"
+            )
+        } else {
+            if (winningQuery != null) tools.playbookRecord(topic, winningQuery, false)
+            plan?.source?.page?.url?.let { tools.domainRecord(KnowledgeBank.draftHost(it), false) }
+        }
 
         tools.logAppend(
             "answer", "agent", if (answer.refused) "research-refused" else "research-answer",

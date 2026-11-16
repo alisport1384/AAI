@@ -3,7 +3,18 @@ package ir.aai.hushyar
 import ir.aai.hushyar.core.Text
 import ir.aai.hushyar.domain.Agent
 import ir.aai.hushyar.domain.AgentTools
+import ir.aai.hushyar.domain.CaseStore
 import ir.aai.hushyar.domain.Catalog
+import ir.aai.hushyar.domain.DomainStat
+import ir.aai.hushyar.domain.DomainTrust
+import ir.aai.hushyar.domain.Evidence
+import ir.aai.hushyar.domain.PlanProgress
+import ir.aai.hushyar.domain.PlayEntry
+import ir.aai.hushyar.domain.Playbook
+import ir.aai.hushyar.domain.ProactiveBudget
+import ir.aai.hushyar.domain.QaCase
+import ir.aai.hushyar.domain.QuestionModel
+import ir.aai.hushyar.domain.ResearchPlan
 import ir.aai.hushyar.domain.Engines
 import ir.aai.hushyar.domain.ExtractedPage
 import ir.aai.hushyar.domain.KnowledgeBank
@@ -137,6 +148,53 @@ class FakeTools(
     }
 
     override fun exportLogMarkdown(): String = exportedMarkdown
+    // ---- v0.5: learning ports ----
+
+    val cases = mutableListOf<QaCase>()
+    val playbook = mutableListOf<PlayEntry>()
+    val domains = mutableListOf<DomainStat>()
+    var progress = PlanProgress("")
+    var plan: ResearchPlan = ResearchPlan("", emptyList(), NOW)
+    var proactiveBudgetValue: ProactiveBudget = ProactiveBudget.NORMAL
+
+    override fun caseFind(model: QuestionModel, question: String): QaCase? =
+        CaseStore.find(cases, model, question, clock, pack)
+
+    override fun caseLearn(model: QuestionModel, question: String, answer: String, source: Evidence?) {
+        val updated = CaseStore.learn(cases, model, question, answer, source, clock)
+        cases.clear()
+        cases.addAll(updated)
+    }
+
+    override fun caseTouch(id: String) {
+        val updated = CaseStore.touch(cases, id, clock)
+        cases.clear()
+        cases.addAll(updated)
+    }
+
+    override fun casesAll(limit: Int): List<QaCase> = cases.take(limit)
+
+    override fun playbookRecord(topicKey: String, query: String, won: Boolean) {
+        val updated = Playbook.record(playbook, topicKey, query, won, clock)
+        playbook.clear()
+        playbook.addAll(updated)
+    }
+
+    override fun playbookBest(topicKey: String, limit: Int): List<PlayEntry> = Playbook.best(topicKey, playbook, limit)
+    override fun playbookRefusals(topicKey: String): Int = Playbook.refusals(topicKey, playbook)
+    override fun domainFactor(domain: String): Double = DomainTrust.factor(domains, domain)
+
+    override fun domainRecord(domain: String, won: Boolean) {
+        val updated = DomainTrust.record(domains, domain, won)
+        domains.clear()
+        domains.addAll(updated)
+    }
+
+    override fun researchPlan(): ResearchPlan = plan
+    override fun planProgress(): PlanProgress = progress
+    override fun planProgressSave(progress: PlanProgress) { this.progress = progress }
+    override fun proactiveBudget(): ProactiveBudget = proactiveBudgetValue
+
 }
 
 class AgentTest {
@@ -392,9 +450,13 @@ class AgentTest {
 
         val second = agent.run("قیمت گوشی سامسونگ گلکسی S24 چقدر است؟")
         assertFalse(second.answer.refused)
-        assertEquals("knowledge.answer", second.answer.intent)
+        // v0.5: the case file answers before the knowledge store does — either way, no new search.
+        assertTrue(
+            second.answer.intent,
+            second.answer.intent == "knowledge.answer" || second.answer.intent == "case.reuse"
+        )
         assertEquals(searchHitsAfterFirst, tools.logs.count { it.kind == "web" })
-        assertTrue(second.answer.bullets.any { it.contains("بدون جستجوی تازه") })
+        assertTrue(second.steps.none { it.tool == "web.search" })
         assertTrue(stored == tools.knowledge.size)
     }
 
@@ -510,4 +572,5 @@ class AgentTest {
         )
         assertTrue(outcome.steps.any { it.tool == "knowledge.store" })
     }
+
 }

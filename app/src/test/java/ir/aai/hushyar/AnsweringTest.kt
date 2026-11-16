@@ -1,6 +1,17 @@
 package ir.aai.hushyar
 
 import ir.aai.hushyar.core.Text
+import ir.aai.hushyar.domain.CaseStore
+import ir.aai.hushyar.domain.DomainStat
+import ir.aai.hushyar.domain.DomainTrust
+import ir.aai.hushyar.domain.Evidence
+import ir.aai.hushyar.domain.PlanProgress
+import ir.aai.hushyar.domain.PlayEntry
+import ir.aai.hushyar.domain.Playbook
+import ir.aai.hushyar.domain.ProactiveBudget
+import ir.aai.hushyar.domain.QaCase
+import ir.aai.hushyar.domain.QuestionModel
+import ir.aai.hushyar.domain.ResearchPlan
 import ir.aai.hushyar.domain.AgentTools as AgentTools_
 import ir.aai.hushyar.domain.Catalog
 import ir.aai.hushyar.domain.KnowledgeDecision
@@ -451,4 +462,51 @@ class AnswerTools(
     override fun logRecent(limit: Int): List<LogEvent> = logs.takeLast(limit)
     override fun backupNow(): String = ""
     override fun exportLogMarkdown(): String = "# log\n"
+    // ---- v0.5: learning ports ----
+
+    val cases = mutableListOf<QaCase>()
+    val playbook = mutableListOf<PlayEntry>()
+    val domains = mutableListOf<DomainStat>()
+    var progress = PlanProgress("")
+    var plan: ResearchPlan = ResearchPlan("", emptyList(), 1_700_000_000_000L)
+    var proactiveBudgetValue: ProactiveBudget = ProactiveBudget.NORMAL
+
+    override fun caseFind(model: QuestionModel, question: String): QaCase? =
+        CaseStore.find(cases, model, question, clock, pack)
+
+    override fun caseLearn(model: QuestionModel, question: String, answer: String, source: Evidence?) {
+        val updated = CaseStore.learn(cases, model, question, answer, source, clock)
+        cases.clear()
+        cases.addAll(updated)
+    }
+
+    override fun caseTouch(id: String) {
+        val updated = CaseStore.touch(cases, id, clock)
+        cases.clear()
+        cases.addAll(updated)
+    }
+
+    override fun casesAll(limit: Int): List<QaCase> = cases.take(limit)
+
+    override fun playbookRecord(topicKey: String, query: String, won: Boolean) {
+        val updated = Playbook.record(playbook, topicKey, query, won, clock)
+        playbook.clear()
+        playbook.addAll(updated)
+    }
+
+    override fun playbookBest(topicKey: String, limit: Int): List<PlayEntry> = Playbook.best(topicKey, playbook, limit)
+    override fun playbookRefusals(topicKey: String): Int = Playbook.refusals(topicKey, playbook)
+    override fun domainFactor(domain: String): Double = DomainTrust.factor(domains, domain)
+
+    override fun domainRecord(domain: String, won: Boolean) {
+        val updated = DomainTrust.record(domains, domain, won)
+        domains.clear()
+        domains.addAll(updated)
+    }
+
+    override fun researchPlan(): ResearchPlan = plan
+    override fun planProgress(): PlanProgress = progress
+    override fun planProgressSave(progress: PlanProgress) { this.progress = progress }
+    override fun proactiveBudget(): ProactiveBudget = proactiveBudgetValue
+
 }

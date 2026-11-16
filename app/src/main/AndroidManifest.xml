@@ -16,6 +16,12 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.Hushyar">
 
+        <!-- کاوش خودکار: JobScheduler سیستم، بدون کتابخانهٔ تازه و بدون مجوز اضافه -->
+        <service
+            android:name=".data.ProactiveJobService"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"

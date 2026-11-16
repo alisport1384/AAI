@@ -7,6 +7,18 @@ import ir.aai.hushyar.core.Text
 import ir.aai.hushyar.domain.AgentTools
 import ir.aai.hushyar.domain.Backup
 import ir.aai.hushyar.domain.Catalog
+import ir.aai.hushyar.domain.CaseStore
+import ir.aai.hushyar.domain.DomainStat
+import ir.aai.hushyar.domain.DomainTrust
+import ir.aai.hushyar.domain.Evidence
+import ir.aai.hushyar.domain.PlanBuilder
+import ir.aai.hushyar.domain.PlanProgress
+import ir.aai.hushyar.domain.PlayEntry
+import ir.aai.hushyar.domain.Playbook
+import ir.aai.hushyar.domain.ProactiveBudget
+import ir.aai.hushyar.domain.QaCase
+import ir.aai.hushyar.domain.QuestionModel
+import ir.aai.hushyar.domain.ResearchPlan
 import ir.aai.hushyar.domain.ExtractedPage
 import ir.aai.hushyar.domain.KnowledgeItem
 import ir.aai.hushyar.domain.KnowledgeResult
@@ -106,6 +118,67 @@ class AndroidTools(
     override fun insertListings(listings: List<Listing>): Int = repos.insertListings(listings)
 
     override fun researchBudget(): ResearchBudget = repos.researchBudget()
+
+    // ---- v0.5: learning from answered questions ----
+
+    override fun caseFind(model: QuestionModel, question: String): QaCase? =
+        repos.caseFind(model, question, now())
+
+    override fun caseLearn(model: QuestionModel, question: String, answer: String, source: Evidence?) {
+        val existing = repos.casesAll(400)
+        val updated = CaseStore.learn(existing, model, question, answer, source, now())
+        repos.caseUpsert(updated)
+        repos.log("learn", "agent", "پروندهٔ پاسخ ذخیره شد", question.take(160))
+    }
+
+    override fun caseTouch(id: String) {
+        val existing = repos.casesAll(400)
+        repos.caseUpsert(CaseStore.touch(existing, id, now()))
+    }
+
+    override fun casesAll(limit: Int): List<QaCase> = repos.casesAll(limit)
+
+    override fun playbookRecord(topicKey: String, query: String, won: Boolean) {
+        repos.playbookUpsert(Playbook.record(repos.playbookAll(), topicKey, query, won, now()))
+    }
+
+    override fun playbookBest(topicKey: String, limit: Int): List<PlayEntry> =
+        Playbook.best(topicKey, repos.playbookAll(), limit)
+
+    override fun playbookRefusals(topicKey: String): Int = Playbook.refusals(topicKey, repos.playbookAll())
+
+    override fun domainFactor(domain: String): Double = DomainTrust.factor(repos.domainsAll(), domain)
+
+    override fun domainRecord(domain: String, won: Boolean) {
+        repos.domainsUpsert(DomainTrust.record(repos.domainsAll(), domain, won))
+    }
+
+    // ---- v0.5: the plan that runs without a question ----
+
+    override fun researchPlan(): ResearchPlan {
+        val pack = repos.activePack() ?: EMPTY_PACK
+        val catalog = catalog()
+        val questions = repos.events(200)
+            .filter { event -> event.kind == "answer" }
+            .map { event -> event.detail.substringAfter("q=").substringBefore(" |") }
+        return PlanBuilder.build(pack, catalog.products, questions.filter { it.isNotBlank() }, "fa", now())
+    }
+
+    override fun planProgress(): PlanProgress {
+        val plan = researchPlan()
+        val saved = repos.planProgress(plan.goal)
+        val merged = plan.layers.associate { layer -> layer.id to (saved.states[layer.id] ?: ir.aai.hushyar.domain.LayerState(layer.id)) }
+        return PlanProgress(plan.goal, merged)
+    }
+
+    override fun planProgressSave(progress: PlanProgress) = repos.planProgressSave(progress)
+
+    override fun proactiveBudget(): ProactiveBudget =
+        when (repos.researchDepth()) {
+            "quick" -> ProactiveBudget.LIGHT
+            "deep" -> ProactiveBudget.DEEP
+            else -> ProactiveBudget.NORMAL
+        }
 
     override fun webSearch(query: String, langTag: String): SearchReport {
         val report = search.search(query, langTag)

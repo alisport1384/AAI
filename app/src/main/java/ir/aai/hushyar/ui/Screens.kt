@@ -303,6 +303,46 @@ private fun KnowledgeTab(vm: AppViewModel) {
 
     LaunchedEffect(Unit) { vm.refreshData() }
 
+    // ---- v0.5: the plan it runs without being asked ----
+    SectionTitle("کاوش خودپیشه")
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(
+                if (vm.planGoal.isBlank()) "هنوز هدفی ثبت نشده" else "هدف: ${vm.planGoal}",
+                style = MaterialTheme.typography.titleMedium
+            )
+            LinearProgressIndicator(
+                progress = { vm.planRatio.toFloat().coerceIn(0f, 1f) },
+                modifier = Modifier.fillMaxWidth()
+            )
+            Text(
+                "پیشرفت ${(vm.planRatio * 100).toInt()}٪ • ${vm.caseSummary}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (vm.planLines.isEmpty()) {
+                Body("لایه‌ای برای کاوش نیست. اول بازار و چند دادهٔ واقعی لازم است.")
+            } else {
+                vm.planLines.forEach { BulletRow(it) }
+            }
+            vm.lastProactive?.let { line ->
+                Text(line, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
+            }
+            OutlinedButton(
+                onClick = { vm.exploreNow() },
+                enabled = !vm.proactiveRunning && vm.planLines.isNotEmpty(),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (vm.proactiveRunning) "در حال کاوش…" else "یک لایه کاوش کن")
+            }
+            Text(
+                "همین کار هر ۱۵ دقیقه یک‌بار به‌طور خودکار (JobScheduler سیستم) هم اجرا می‌شود؛ هر اجرا محدود و قابل ازسرگیری است.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+
     SectionTitle("دانش هوش (${Txt.numEn(vm.knowledge.size.toLong())})")
     Body("این‌ها را خودِ هوش از وب پیدا کرده، دسته‌بندی کرده و ذخیره کرده است. هر ردیف منبع، تاریخ بازبینی و تعداد منابع هم‌رأی دارد؛ ردیف منسوخ، تاریخ نگه داشته می‌شود نه پاک.")
     Body(vm.knowledgeSummary())

@@ -12,10 +12,10 @@ import java.security.MessageDigest
  */
 object Backup {
 
-    const val SCHEMA: String = "hushyar.backup/3"
+    const val SCHEMA: String = "hushyar.backup/4"
 
     /** Older snapshots stay restorable: v0.2 files simply carry no knowledge block. */
-    val ACCEPTED_SCHEMAS: Set<String> = setOf(SCHEMA, "hushyar.backup/2")
+    val ACCEPTED_SCHEMAS: Set<String> = setOf(SCHEMA, "hushyar.backup/3", "hushyar.backup/2")
 
     data class Snapshot(
         val packs: List<MarketPack> = emptyList(),
@@ -23,6 +23,11 @@ object Backup {
         val listings: List<Listing> = emptyList(),
         val memory: List<MemoryItem> = emptyList(),
         val knowledge: List<KnowledgeItem> = emptyList(),
+        /** v0.5: answered-question cases, proven queries, source trust, plan cursor. */
+        val cases: List<QaCase> = emptyList(),
+        val playbook: List<PlayEntry> = emptyList(),
+        val domains: List<DomainStat> = emptyList(),
+        val plans: List<PlanProgress> = emptyList(),
         val logs: List<LogEvent> = emptyList(),
         val audits: List<AuditEntry> = emptyList(),
         val answers: Map<String, String> = emptyMap(),
@@ -104,6 +109,52 @@ object Backup {
                     "tags" to MiniJson.strs(item.tags)
                 )
             }),
+            "cases" to MiniJson.arr(snapshot.cases.map { case ->
+                MiniJson.obj(
+                    "id" to MiniJson.str(case.id),
+                    "topicKey" to MiniJson.str(case.topicKey),
+                    "ask" to MiniJson.str(case.ask),
+                    "subject" to MiniJson.strs(case.subject),
+                    "question" to MiniJson.str(case.question),
+                    "answer" to MiniJson.str(case.answer),
+                    "url" to MiniJson.str(case.url),
+                    "domain" to MiniJson.str(case.domain),
+                    "capturedAt" to MiniJson.num(case.capturedAt),
+                    "lastVerifiedAt" to MiniJson.num(case.lastVerifiedAt),
+                    "ttlDays" to MiniJson.num(case.ttlDays),
+                    "hits" to MiniJson.num(case.hits)
+                )
+            }),
+            "playbook" to MiniJson.arr(snapshot.playbook.map { entry ->
+                MiniJson.obj(
+                    "topicKey" to MiniJson.str(entry.topicKey),
+                    "query" to MiniJson.str(entry.query),
+                    "wins" to MiniJson.num(entry.wins),
+                    "losses" to MiniJson.num(entry.losses),
+                    "lastWinAt" to MiniJson.num(entry.lastWinAt)
+                )
+            }),
+            "domains" to MiniJson.arr(snapshot.domains.map { stat ->
+                MiniJson.obj(
+                    "domain" to MiniJson.str(stat.domain),
+                    "wins" to MiniJson.num(stat.wins),
+                    "losses" to MiniJson.num(stat.losses)
+                )
+            }),
+            "plans" to MiniJson.arr(snapshot.plans.map { plan ->
+                MiniJson.obj(
+                    "goal" to MiniJson.str(plan.goal),
+                    "states" to MiniJson.arr(plan.states.values.map { state ->
+                        MiniJson.obj(
+                            "id" to MiniJson.str(state.id),
+                            "status" to MiniJson.str(state.status.name),
+                            "lastRunAt" to MiniJson.num(state.lastRunAt),
+                            "learned" to MiniJson.num(state.learned),
+                            "queriesDone" to MiniJson.num(state.queriesDone)
+                        )
+                    })
+                )
+            }),
             "logs" to MiniJson.arr(snapshot.logs.map { event ->
                 MiniJson.obj(
                     "id" to MiniJson.num(event.id),
@@ -139,6 +190,9 @@ object Backup {
                     "listings" to MiniJson.num(snapshot.listings.size),
                     "memory" to MiniJson.num(snapshot.memory.size),
                     "knowledge" to MiniJson.num(snapshot.knowledge.size),
+                    "cases" to MiniJson.num(snapshot.cases.size),
+                    "playbook" to MiniJson.num(snapshot.playbook.size),
+                    "plans" to MiniJson.num(snapshot.plans.size),
                     "logs" to MiniJson.num(snapshot.logs.size),
                     "audits" to MiniJson.num(snapshot.audits.size)
                 )
@@ -237,6 +291,57 @@ object Backup {
             )
         }
 
+        val cases = data["cases"]?.asObjects().orEmpty().map { row ->
+            QaCase(
+                id = row["id"]?.asStringOrNull() ?: throw BackupException("پرونده بدون id"),
+                topicKey = row["topicKey"]?.asStringOrNull() ?: "",
+                ask = row["ask"]?.asStringOrNull() ?: "FACT",
+                subject = row["subject"]?.asStrings() ?: emptyList(),
+                question = row["question"]?.asStringOrNull() ?: "",
+                answer = row["answer"]?.asStringOrNull() ?: "",
+                url = row["url"]?.asStringOrNull() ?: "",
+                domain = row["domain"]?.asStringOrNull() ?: "",
+                capturedAt = row["capturedAt"]?.asLongOrNull() ?: 0L,
+                lastVerifiedAt = row["lastVerifiedAt"]?.asLongOrNull() ?: 0L,
+                ttlDays = row["ttlDays"]?.asIntOrNull() ?: CaseStore.DEFAULT_TTL_DAYS,
+                hits = row["hits"]?.asIntOrNull() ?: 0
+            )
+        }
+
+        val playbook = data["playbook"]?.asObjects().orEmpty().map { row ->
+            PlayEntry(
+                topicKey = row["topicKey"]?.asStringOrNull() ?: "",
+                query = row["query"]?.asStringOrNull() ?: "",
+                wins = row["wins"]?.asIntOrNull() ?: 0,
+                losses = row["losses"]?.asIntOrNull() ?: 0,
+                lastWinAt = row["lastWinAt"]?.asLongOrNull() ?: 0L
+            )
+        }
+
+        val domains = data["domains"]?.asObjects().orEmpty().map { row ->
+            DomainStat(
+                domain = row["domain"]?.asStringOrNull() ?: "",
+                wins = row["wins"]?.asIntOrNull() ?: 0,
+                losses = row["losses"]?.asIntOrNull() ?: 0
+            )
+        }
+
+        val plans = data["plans"]?.asObjects().orEmpty().map { row ->
+            val goal = row["goal"]?.asStringOrNull() ?: ""
+            val states = row["states"]?.asObjects().orEmpty().mapNotNull { state ->
+                val id = state["id"]?.asStringOrNull() ?: return@mapNotNull null
+                LayerState(
+                    id = id,
+                    status = runCatching { LayerStatus.valueOf(state["status"]?.asStringOrNull() ?: "PENDING") }
+                        .getOrDefault(LayerStatus.PENDING),
+                    lastRunAt = state["lastRunAt"]?.asLongOrNull() ?: 0L,
+                    learned = state["learned"]?.asIntOrNull() ?: 0,
+                    queriesDone = state["queriesDone"]?.asIntOrNull() ?: 0
+                )
+            }.associateBy { it.id }
+            PlanProgress(goal, states)
+        }
+
         val logs = data["logs"]?.asObjects().orEmpty().map { row ->
             LogEvent(
                 id = row["id"]?.asLongOrNull() ?: 0L,
@@ -264,6 +369,10 @@ object Backup {
             listings = listings,
             memory = memory,
             knowledge = knowledge,
+            cases = cases,
+            playbook = playbook,
+            domains = domains,
+            plans = plans,
             logs = logs,
             audits = audits,
             answers = data["answers"]?.fieldsOrEmpty?.mapValues { it.value.asStringOrNull().orEmpty() } ?: emptyMap(),

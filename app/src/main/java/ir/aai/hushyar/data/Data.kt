@@ -10,6 +10,14 @@ import ir.aai.hushyar.core.Json
 import ir.aai.hushyar.core.MiniJson
 import ir.aai.hushyar.core.Text
 import ir.aai.hushyar.domain.AuditEntry
+import ir.aai.hushyar.domain.CaseStore
+import ir.aai.hushyar.domain.DomainStat
+import ir.aai.hushyar.domain.LayerState
+import ir.aai.hushyar.domain.LayerStatus
+import ir.aai.hushyar.domain.PlanProgress
+import ir.aai.hushyar.domain.PlayEntry
+import ir.aai.hushyar.domain.QaCase
+import ir.aai.hushyar.domain.QuestionModel
 import ir.aai.hushyar.domain.Listing
 import ir.aai.hushyar.domain.MarketPack
 import ir.aai.hushyar.domain.MemoryItem
@@ -71,6 +79,10 @@ class Db(context: Context) : SQLiteOpenHelper(context, NAME, null, VERSION) {
         db.execSQL(MEMORY_TABLE)
         db.execSQL(EVENT_TABLE)
         db.execSQL(KNOWLEDGE_TABLE)
+        db.execSQL(CASE_TABLE)
+        db.execSQL(PLAYBOOK_TABLE)
+        db.execSQL(DOMAIN_TABLE)
+        db.execSQL(PLAN_TABLE)
         db.execSQL("CREATE TABLE preference(k TEXT PRIMARY KEY, v TEXT NOT NULL)")
         db.execSQL(
             """CREATE TABLE audit(
@@ -94,12 +106,16 @@ class Db(context: Context) : SQLiteOpenHelper(context, NAME, null, VERSION) {
         }
         if (oldVersion < 3) {
             db.execSQL(KNOWLEDGE_TABLE.replace("CREATE TABLE", "CREATE TABLE IF NOT EXISTS"))
+            db.execSQL(CASE_TABLE)
+            db.execSQL(PLAYBOOK_TABLE)
+            db.execSQL(DOMAIN_TABLE)
+            db.execSQL(PLAN_TABLE)
         }
     }
 
     companion object {
         private const val NAME = "hushyar.db"
-        private const val VERSION = 3
+        private const val VERSION = 4
 
         private const val MEMORY_TABLE = """CREATE TABLE memory(
                 id TEXT PRIMARY KEY,
@@ -121,6 +137,42 @@ class Db(context: Context) : SQLiteOpenHelper(context, NAME, null, VERSION) {
                 actor TEXT NOT NULL,
                 message TEXT NOT NULL,
                 detail TEXT NOT NULL DEFAULT ''
+            )"""
+
+        private const val CASE_TABLE = """CREATE TABLE IF NOT EXISTS qa_case(
+                id TEXT PRIMARY KEY,
+                topic_key TEXT NOT NULL,
+                ask TEXT NOT NULL,
+                subject TEXT NOT NULL,
+                question TEXT NOT NULL,
+                answer TEXT NOT NULL,
+                url TEXT NOT NULL DEFAULT '',
+                domain TEXT NOT NULL DEFAULT '',
+                captured_at INTEGER NOT NULL,
+                last_verified_at INTEGER NOT NULL,
+                ttl_days INTEGER NOT NULL DEFAULT 14,
+                hits INTEGER NOT NULL DEFAULT 0
+            )"""
+
+        private const val PLAYBOOK_TABLE = """CREATE TABLE IF NOT EXISTS playbook(
+                topic_key TEXT NOT NULL,
+                query TEXT NOT NULL,
+                wins INTEGER NOT NULL DEFAULT 0,
+                losses INTEGER NOT NULL DEFAULT 0,
+                last_win_at INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(topic_key, query)
+            )"""
+
+        private const val DOMAIN_TABLE = """CREATE TABLE IF NOT EXISTS domain_stat(
+                domain TEXT PRIMARY KEY,
+                wins INTEGER NOT NULL DEFAULT 0,
+                losses INTEGER NOT NULL DEFAULT 0
+            )"""
+
+        private const val PLAN_TABLE = """CREATE TABLE IF NOT EXISTS plan_state(
+                goal TEXT PRIMARY KEY,
+                states TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
             )"""
 
         private const val KNOWLEDGE_TABLE = """CREATE TABLE knowledge(
@@ -540,6 +592,158 @@ class Repos(private val db: Db) {
 
     fun knowledgeStale(now: Long = this.now, limit: Int = 20): List<KnowledgeItem> =
         KnowledgeBank.staleItems(knowledgeAll(800), now).take(limit)
+
+    // ---------- v0.5: what was learned from answering (cases, playbook, source trust, plan) ----------
+
+    private fun caseValues(c: QaCase): ContentValues = ContentValues().apply {
+        put("id", c.id)
+        put("topic_key", c.topicKey)
+        put("ask", c.ask)
+        put("subject", c.subject.joinToString(" "))
+        put("question", c.question)
+        put("answer", c.answer)
+        put("url", c.url)
+        put("domain", c.domain)
+        put("captured_at", c.capturedAt)
+        put("last_verified_at", c.lastVerifiedAt)
+        put("ttl_days", c.ttlDays)
+        put("hits", c.hits)
+    }
+
+    private fun readCase(c: Cursor): QaCase = QaCase(
+        id = c.getString(c.getColumnIndexOrThrow("id")),
+        topicKey = c.getString(c.getColumnIndexOrThrow("topic_key")),
+        ask = c.getString(c.getColumnIndexOrThrow("ask")),
+        subject = c.getString(c.getColumnIndexOrThrow("subject")).split(" ").filter { it.isNotBlank() },
+        question = c.getString(c.getColumnIndexOrThrow("question")),
+        answer = c.getString(c.getColumnIndexOrThrow("answer")),
+        url = c.getString(c.getColumnIndexOrThrow("url")),
+        domain = c.getString(c.getColumnIndexOrThrow("domain")),
+        capturedAt = c.getLong(c.getColumnIndexOrThrow("captured_at")),
+        lastVerifiedAt = c.getLong(c.getColumnIndexOrThrow("last_verified_at")),
+        ttlDays = c.getInt(c.getColumnIndexOrThrow("ttl_days")),
+        hits = c.getInt(c.getColumnIndexOrThrow("hits"))
+    )
+
+    fun casesAll(limit: Int = 400): List<QaCase> =
+        db.readableDatabase.query("qa_case", null, null, null, null, null, "last_verified_at DESC", limit.toString()).use { c ->
+            val out = mutableListOf<QaCase>()
+            while (c.moveToNext()) out.add(readCase(c))
+            return out
+        }
+
+    fun caseUpsert(cases: List<QaCase>) {
+        if (cases.isEmpty()) return
+        val w = db.writableDatabase
+        w.beginTransaction()
+        try {
+            for (case in cases) w.insertWithOnConflict("qa_case", null, caseValues(case), SQLiteDatabase.CONFLICT_REPLACE)
+            w.setTransactionSuccessful()
+        } finally {
+            w.endTransaction()
+        }
+    }
+
+    fun caseFind(model: QuestionModel, question: String, now: Long = this.now): QaCase? =
+        CaseStore.find(casesAll(400), model, question, now, activePack())
+
+    fun playbookAll(): List<PlayEntry> =
+        db.readableDatabase.query("playbook", null, null, null, null, null, "last_win_at DESC", "600").use { c ->
+            val out = mutableListOf<PlayEntry>()
+            while (c.moveToNext()) {
+                out.add(
+                    PlayEntry(
+                        topicKey = c.getString(c.getColumnIndexOrThrow("topic_key")),
+                        query = c.getString(c.getColumnIndexOrThrow("query")),
+                        wins = c.getInt(c.getColumnIndexOrThrow("wins")),
+                        losses = c.getInt(c.getColumnIndexOrThrow("losses")),
+                        lastWinAt = c.getLong(c.getColumnIndexOrThrow("last_win_at"))
+                    )
+                )
+            }
+            return out
+        }
+
+    fun playbookUpsert(entries: List<PlayEntry>) {
+        if (entries.isEmpty()) return
+        val w = db.writableDatabase
+        w.beginTransaction()
+        try {
+            for (e in entries) {
+                val values = ContentValues().apply {
+                    put("topic_key", e.topicKey)
+                    put("query", e.query)
+                    put("wins", e.wins)
+                    put("losses", e.losses)
+                    put("last_win_at", e.lastWinAt)
+                }
+                w.insertWithOnConflict("playbook", null, values, SQLiteDatabase.CONFLICT_REPLACE)
+            }
+            w.setTransactionSuccessful()
+        } finally {
+            w.endTransaction()
+        }
+    }
+
+    fun domainsAll(): List<DomainStat> =
+        db.readableDatabase.query("domain_stat", null, null, null, null, null, "wins DESC", "300").use { c ->
+            val out = mutableListOf<DomainStat>()
+            while (c.moveToNext()) {
+                out.add(
+                    DomainStat(
+                        domain = c.getString(c.getColumnIndexOrThrow("domain")),
+                        wins = c.getInt(c.getColumnIndexOrThrow("wins")),
+                        losses = c.getInt(c.getColumnIndexOrThrow("losses"))
+                    )
+                )
+            }
+            return out
+        }
+
+    fun domainsUpsert(stats: List<DomainStat>) {
+        if (stats.isEmpty()) return
+        val w = db.writableDatabase
+        w.beginTransaction()
+        try {
+            for (s in stats) {
+                val values = ContentValues().apply {
+                    put("domain", s.domain)
+                    put("wins", s.wins)
+                    put("losses", s.losses)
+                }
+                w.insertWithOnConflict("domain_stat", null, values, SQLiteDatabase.CONFLICT_REPLACE)
+            }
+            w.setTransactionSuccessful()
+        } finally {
+            w.endTransaction()
+        }
+    }
+
+    /** Plan progress is one row per goal: "id|status|lastRunAt|learned|queriesDone" joined by ";". */
+    fun planProgress(goal: String): PlanProgress {
+        db.readableDatabase.query("plan_state", arrayOf("states"), "goal = ?", arrayOf(goal), null, null, null).use { c ->
+            if (!c.moveToFirst()) return PlanProgress(goal)
+            val states = c.getString(0).split(";").mapNotNull { row ->
+                val parts = row.split("|")
+                if (parts.size < 5) return@mapNotNull null
+                val status = runCatching { LayerStatus.valueOf(parts[1]) }.getOrDefault(LayerStatus.PENDING)
+                LayerState(parts[0], status, parts[2].toLongOrNull() ?: 0L, parts[3].toIntOrNull() ?: 0, parts[4].toIntOrNull() ?: 0)
+            }.associateBy { it.id }
+            return PlanProgress(goal, states)
+        }
+    }
+
+    fun planProgressSave(progress: PlanProgress) {
+        val encoded = progress.states.values.joinToString(";") {
+            "${it.id}|${it.status.name}|${it.lastRunAt}|${it.learned}|${it.queriesDone}"
+        }
+        val values = ContentValues().apply {
+            put("goal", progress.goal)
+            put("states", encoded)
+            put("updated_at", now)
+        }
+        db.writableDatabase.insertWithOnConflict("plan_state", null, values, SQLiteDatabase.CONFLICT_REPLACE)
+    }
 
     fun updateKnowledge(item: KnowledgeItem) {
         db.writableDatabase.update("knowledge", knowledgeValues(item), "id = ?", arrayOf(item.id))

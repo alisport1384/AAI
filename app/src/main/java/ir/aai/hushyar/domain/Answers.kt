@@ -235,7 +235,9 @@ object AnswerFocus {
         model: QuestionModel,
         pages: List<ExtractedPage>,
         pack: MarketPack? = null,
-        limit: Int = 8
+        limit: Int = 8,
+        /** Optional tie-break by learned source reliability (v0.5). Never bypasses the gates. */
+        trust: (String) -> Double = { 1.0 }
     ): List<AnswerCandidate> {
         if (pages.isEmpty()) return emptyList()
         val out = mutableListOf<AnswerCandidate>()
@@ -256,10 +258,11 @@ object AnswerFocus {
                 val novelty = if (seenDomains.add(domain)) 0.2 else 0.0
                 val positionBonus = if (position <= 30) 0.1 else 0.0
                 val lengthPenalty = if (sentence.length > 300) 0.15 else 0.0
-                val score = 3.2 * (if (slot != null) 1.0 else 0.0) +
+                val trustFactor = trust(domain)
+                val score = (3.2 * (if (slot != null) 1.0 else 0.0) +
                     1.8 * coverage +
                     0.4 * (if (attributeHit) 1.0 else 0.0) +
-                    novelty + positionBonus - lengthPenalty
+                    novelty + positionBonus - lengthPenalty) * trustFactor
                 out.add(AnswerCandidate(Evidence(sentence, page, score / 5.5), slot, coverage, attributeHit, score))
             }
         }
@@ -330,6 +333,10 @@ object AnswerFocus {
     }
 
     /** Rank + plan in one step, for the agent and for tests measuring answer accuracy. */
-    fun answer(model: QuestionModel, pages: List<ExtractedPage>, pack: MarketPack? = null): AnswerPlan =
-        plan(model, rank(model, pages, pack), pages)
+    fun answer(
+        model: QuestionModel,
+        pages: List<ExtractedPage>,
+        pack: MarketPack? = null,
+        trust: (String) -> Double = { 1.0 }
+    ): AnswerPlan = plan(model, rank(model, pages, pack, trust = trust), pages)
 }

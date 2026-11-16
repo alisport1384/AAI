@@ -13,6 +13,7 @@ import ir.aai.hushyar.data.AndroidTools
 import ir.aai.hushyar.data.BackupService
 import ir.aai.hushyar.data.CsvImporter
 import ir.aai.hushyar.data.HttpUrlTransport
+import ir.aai.hushyar.data.ProactiveRunner
 import ir.aai.hushyar.data.Repos
 import ir.aai.hushyar.data.Store
 import ir.aai.hushyar.domain.Agent
@@ -90,9 +91,26 @@ class AppViewModel(
     var researchDepth by mutableStateOf("balanced")
         private set
 
+    /** The plan the assistant works through on its own (v0.5), and how far it got. */
+    var planLines by mutableStateOf<List<String>>(emptyList())
+        private set
+    var planRatio by mutableStateOf(0.0)
+        private set
+    var planGoal by mutableStateOf("")
+        private set
+    var caseSummary by mutableStateOf("")
+        private set
+    var caseCount by mutableStateOf(0)
+        private set
+    var proactiveRunning by mutableStateOf(false)
+        private set
+    var lastProactive by mutableStateOf<String?>(null)
+        private set
+
     private val qa = QaEngine()
     private val search = SearchCore(HttpUrlTransport())
     private val tools = AndroidTools(repos, store, search)
+    private val proactive = ProactiveRunner(repos, tools)
 
     init {
         refresh()
@@ -274,6 +292,9 @@ class AppViewModel(
             val transcript = Markdown.answer(question, outcome.answer, outcome.steps, System.currentTimeMillis())
             val file = store.writeLog("qa-${store.stamp()}", transcript)
             repos.audit("agent", "qa.answer", outcome.answer.intent, "refused=${outcome.answer.refused} md=${file.name}")
+            // v0.5: learn from the question we just answered — a light pass on the same question, so
+            // the next similar one is faster (a case hit costs zero network rounds).
+            if (!outcome.answer.refused) runCatching { proactive.afterAnswer(question) }
             outcome
         }) { outcome ->
             lastAnswer = outcome.answer
@@ -285,12 +306,20 @@ class AppViewModel(
 
     private fun refreshSecondary() {
         io({
+            val plan = tools.researchPlan()
+            val progress = tools.planProgress()
+            val cases = repos.casesAll()
             Secondary(
                 memory = repos.memoryAll(300),
                 events = repos.events(200),
                 backups = store.listBackups().map { it.name },
                 knowledge = repos.knowledgeAll(300),
-                depth = repos.researchDepth()
+                depth = repos.researchDepth(),
+                planLines = plan.describe(progress.statuses()),
+                planRatio = plan.ratio(progress.statuses()),
+                planGoal = plan.goal,
+                caseSummary = ir.aai.hushyar.domain.CaseStore.summary(cases, System.currentTimeMillis()),
+                caseCount = cases.size
             )
         }) { apply(it) }
     }
@@ -300,7 +329,12 @@ class AppViewModel(
         val events: List<LogEvent>,
         val backups: List<String>,
         val knowledge: List<KnowledgeItem>,
-        val depth: String
+        val depth: String,
+        val planLines: List<String> = emptyList(),
+        val planRatio: Double = 0.0,
+        val planGoal: String = "",
+        val caseSummary: String = "",
+        val caseCount: Int = 0
     )
 
     private fun apply(snapshot: Secondary) {
@@ -309,10 +343,39 @@ class AppViewModel(
         backupFiles = snapshot.backups
         knowledge = snapshot.knowledge
         researchDepth = snapshot.depth
+        planLines = snapshot.planLines
+        planRatio = snapshot.planRatio
+        planGoal = snapshot.planGoal
+        caseSummary = snapshot.caseSummary
+        caseCount = snapshot.caseCount
         dataFiles = store.inventory()
     }
 
     fun refreshData() = refreshSecondary()
+
+    /**
+     * One bounded slice of autonomous exploration, on demand. Same code path the scheduler uses, so
+     * what the button does and what happens in the background are the same thing.
+     */
+    fun exploreNow() {
+        if (proactiveRunning) return
+        proactiveRunning = true
+        io({ proactive.tick() }) { outcome ->
+            proactiveRunning = false
+            lastProactive = when {
+                outcome == null -> "پلان تازه‌ای برای کاوش نیست (یا کامل شده)."
+                else -> "لایه‌های اجراشده: ${outcome.ranLayers.joinToString("، ").ifBlank { "—" }}؛ " +
+                    "پرسش ${outcome.queries.size}، صفحه ${outcome.pages.size}، آموخته ${outcome.learned.size}؛ " +
+                    "توقف: ${outcome.stop}"
+            }
+            notice = lastProactive
+            refreshSecondary()
+        }
+    }
+
+    fun closeProactiveNotice() {
+        lastProactive = null
+    }
 
     // ---------- data control: edit and delete individual records ----------
 
