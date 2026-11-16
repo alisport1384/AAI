@@ -239,7 +239,9 @@ class AgentTest {
     @Test
     fun webResearchAnswersWithTraceableCitations() {
         val tools = tools()
-        val outcome = Agent(tools).run("بهترین مارک چای سبز برای فشار خون چیست؟")
+        // The corpus below is about a phone, so the question must be about that phone: answering a
+        // tea question from a phone page is exactly the v0.3 defect these tests used to encode.
+        val outcome = Agent(tools).run("قیمت گوشی سامسونگ گلکسی S24 چقدر است؟")
         val answer = outcome.answer
         assertFalse(answer.refused)
         assertTrue(answer.citations.isNotEmpty())
@@ -306,8 +308,14 @@ class AgentTest {
 
     @Test
     fun englishQuestionIsAnsweredInEnglish() {
-        val tools = tools()
-        val outcome = Agent(tools).run("what do users say about green tea and blood pressure?")
+        val english = """
+            <html><head><title>Review</title></head><body><article>
+            <p>The Samsung Galaxy S24 costs about 50 million toman in the Iranian market today.</p>
+            <p>It comes with 256 GB of storage and an official 18 month warranty from the seller.</p>
+            </article></body></html>
+        """.trimIndent()
+        val tools = tools(pageHtml = english)
+        val outcome = Agent(tools).run("how much does the samsung galaxy s24 cost?")
         assertEquals("en", outcome.answer.lang)
         assertFalse(outcome.answer.refused)
     }
@@ -493,7 +501,7 @@ class AgentTest {
                 "https://shop.example.org/" to (200 to article)
             )
         )
-        val outcome = Agent(tools).run("بهترین مارک چای سبز برای فشار خون چیست؟")
+        val outcome = Agent(tools).run("قیمت گوشی سامسونگ گلکسی S24 چقدر است؟")
         assertFalse(outcome.answer.refused)
         assertTrue(
             outcome.answer.bullets.any {

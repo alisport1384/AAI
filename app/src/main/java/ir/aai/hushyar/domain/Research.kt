@@ -50,7 +50,10 @@ data class ResearchOutcome(
     val stop: ResearchStop,
     val failures: Map<String, String> = emptyMap(),
     /** Pages intentionally not used as evidence, with the reason (hostile, short, unreachable). */
-    val skipped: List<Pair<String, String>> = emptyList()
+    val skipped: List<Pair<String, String>> = emptyList(),
+    /** How the question was read, and whether an actual answer (not just topical text) was found. */
+    val model: QuestionModel? = null,
+    val answer: AnswerPlan? = null
 )
 
 /**
@@ -90,6 +93,7 @@ class DeepResearcher(
                 stop = ResearchStop.SUFFICIENT
             )
         }
+        val model = QuestionReader.read(question, langTag)
         val queries = LinkedHashSet<String>()
         val pages = mutableListOf<ExtractedPage>()
         val seen = mutableSetOf<String>()
@@ -99,6 +103,7 @@ class DeepResearcher(
         var evidence: List<Evidence> = emptyList()
         var drafts: List<KnowledgeItem> = emptyList()
         var coverage = 0.0
+        var plan: AnswerPlan? = null
         var stop = ResearchStop.ROUNDS
         var round = 0
 
@@ -133,7 +138,11 @@ class DeepResearcher(
                     skipped.add(hit.url to "کنار گذاشته شد: نشانهٔ تزریق دستور (${page.signals.joinToString(",")})")
                     continue
                 }
-                if (page.text.length < MIN_USEFUL_CHARS) {
+                // Thin pages are usually junk, but a short page that states the exact answer
+                // (a price listing, a one-line spec sheet) is not junk — it is the answer.
+                if (page.text.length < MIN_USEFUL_CHARS &&
+                    AnswerShapes.slot(model.ask, page.text, pack) == null
+                ) {
                     skipped.add(hit.url to "متن کافی نداشت (${page.text.length} نویسه)")
                     continue
                 }
@@ -141,7 +150,12 @@ class DeepResearcher(
                 fetched++
             }
 
-            evidence = Extractive.select(question, pages, budget.maxEvidence)
+            // Answer-focused selection: only sentences that name the subject survive, and the
+            // question's expected answer shape decides whether the question is actually answered.
+            val ranked = AnswerFocus.rank(model, pages, pack, limit = maxOf(budget.maxEvidence, 5))
+            evidence = ranked.take(budget.maxEvidence).map { it.evidence }
+            val currentPlan = AnswerFocus.plan(model, ranked, pages)
+            plan = currentPlan
             drafts = evidence.map { item ->
                 KnowledgeBank.draft(question, item, pack, confidenceFor(item, pages), now())
             }
@@ -154,7 +168,7 @@ class DeepResearcher(
                     fetched = fetched,
                     evidence = evidence.size,
                     coverage = coverage,
-                    note = noteFor(round, report.hits.size, fetched, evidence.size, coverage)
+                    note = noteFor(round, report.hits.size, fetched, evidence.size, coverage, currentPlan.answered)
                 )
             )
 
@@ -162,7 +176,9 @@ class DeepResearcher(
                 stop = ResearchStop.PAGES
                 break
             }
-            if (coverage >= budget.targetCoverage) {
+            // "Enough" now has two parts: the coverage model is satisfied *and* the question's
+            // answer shape was actually found (a numeric question is never done on topical text).
+            if (coverage >= budget.targetCoverage && (currentPlan.answered || !model.numeric)) {
                 stop = ResearchStop.SUFFICIENT
                 break
             }
@@ -187,7 +203,9 @@ class DeepResearcher(
             coverage = coverage,
             stop = stop,
             failures = failures,
-            skipped = skipped.toList()
+            skipped = skipped.toList(),
+            model = model,
+            answer = plan
         )
     }
 
@@ -206,10 +224,19 @@ class DeepResearcher(
         val base = Text.normalize(question).trim().trimEnd('?', '؟', '.')
         if (round == 0) return base.ifBlank { question.trim() }
 
+        val model = QuestionReader.read(question, langTag)
+        // Gap 0: the question's answer shape is missing. Chase it before anything else.
+        val noAnswerShape = gathered.none { AnswerShapes.answers(model.ask, it.claim, pack) }
+        if (noAnswerShape) {
+            val candidate = (base + " " + QuestionReader.gapTerm(model.ask, langTag)).replace(Regex("\\s+"), " ").trim()
+            if (candidate !in used && model.keepsAnchor(candidate)) return candidate
+        }
+
         val gaps = KnowledgeBank.gaps(question, gathered, now(), pack)
         for (gap in gaps) {
             val candidate = (base + " " + gap.queryTerm).replace(Regex("\\s+"), " ").trim()
-            if (gap.queryTerm.isNotBlank() && candidate !in used) return candidate
+            // Drift guard: a rewrite that loses the subject is a different question, so it is skipped.
+            if (gap.queryTerm.isNotBlank() && candidate !in used && model.keepsAnchor(candidate)) return candidate
         }
         // No structural gap left: widen with bilingual expansion and pack terms.
         val tokens = Text.contentTokens(base)
@@ -217,7 +244,7 @@ class DeepResearcher(
         val extra = (expanded + KnowledgeBank.fillers(question, pack)).distinct()
         for (term in extra) {
             val candidate = "$base $term".replace(Regex("\\s+"), " ").trim()
-            if (candidate !in used) return candidate
+            if (candidate !in used && model.keepsAnchor(candidate)) return candidate
         }
         if (langTag == "fa") {
             val english = "$base review price"
@@ -232,11 +259,12 @@ class DeepResearcher(
         return base.coerceIn(0.2, 0.88)
     }
 
-    private fun noteFor(round: Int, hits: Int, fetched: Int, evidence: Int, coverage: Double): String = when {
+    private fun noteFor(round: Int, hits: Int, fetched: Int, evidence: Int, coverage: Double, answered: Boolean): String = when {
         hits == 0 -> "بدون نتیجه"
         fetched == 0 -> "صفحه‌های تازه‌ای نبود"
-        round == 0 && coverage >= 0.72 -> "دور اول کافی بود"
-        else -> "hits=$hits fetched=$fetched evidence=$evidence coverage=${"%.2f".format(coverage)}"
+        answered && round == 0 -> "دور اول پاسخ پیدا شد"
+        else -> "hits=$hits fetched=$fetched evidence=$evidence coverage=${"%.2f".format(coverage)}" +
+            (if (answered) " پاسخ=یافت شد" else " پاسخ=نیامد")
     }
 }
 

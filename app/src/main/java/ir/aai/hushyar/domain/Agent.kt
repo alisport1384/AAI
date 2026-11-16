@@ -194,7 +194,14 @@ class Agent(
             "موجود=${known.size} کهنه=${stale.size} پوشش=${pct(coverage)}"
         )
         if (known.isNotEmpty() && stale.isEmpty() && coverage >= directAnswerCoverage) {
-            return knowledgeAnswer(question, known, langTag, steps, actions, phraser)
+            val model = QuestionReader.read(question, langTag)
+            val plan = AnswerFocus.plan(model, knowledgeCandidates(model, known, pack))
+            if (plan.answered) return knowledgeAnswer(question, known, langTag, steps, actions, phraser, plan)
+            step(
+                "دانش ذخیره‌شده پاسخ این پرسش نیست", "knowledge.lookup",
+                mapOf("ask" to model.ask.name),
+                "دانش موجود=${known.size} اما هیچ‌کدام ${QuestionReader.expectedAnswerLabel(model.ask)} نداشت"
+            )
         }
 
         // ---- 5. autonomous research: keep searching until the evidence is enough ----
@@ -312,13 +319,30 @@ class Agent(
             )
         }
 
-        // ---- answer ----
-        val draftAnswer: AnswerDraft = if (outcome.evidence.isEmpty()) {
+        // ---- answer: the answer to *this* question, or a precise statement of what is missing ----
+        val plan = outcome.answer
+        val model = outcome.model ?: QuestionReader.read(target, langTag)
+        val draftAnswer: AnswerDraft = if (plan != null && plan.answered) {
+            directDraft(plan, model, outcome, langTag)
+        } else {
             refusedDraft(
-                if (outcome.pages.isEmpty()) "web.empty" else "web.no-evidence",
+                when {
+                    outcome.pages.isEmpty() -> "web.empty"
+                    plan != null && plan.support.isEmpty() -> "web.answer-missing"
+                    else -> "web.no-evidence"
+                },
                 langTag,
                 buildList {
-                    add(if (langTag == "en") "no usable evidence after ${outcome.rounds.size} round(s)" else "پس از ${Text.num(outcome.rounds.size.toLong())} دور جستجو شاهد قابل استفاده‌ای نبود")
+                    if (plan != null) addAll(plan.missing.take(2))
+                    else add(if (langTag == "en") "no usable evidence" else "شاهد قابل استفاده‌ای پیدا نشد")
+                    add(
+                        if (langTag == "en") "asked: ${model.subject.joinToString(" ").ifBlank { target }.take(80)} — " +
+                            "expected: ${QuestionReader.expectedAnswerLabel(model.ask)}"
+                        else "موضوع پرسش: «${model.subject.joinToString(" ").ifBlank { target }.take(80)}» — " +
+                            "چیزی که لازم داشتم: ${QuestionReader.expectedAnswerLabel(model.ask)}"
+                    )
+                    add(if (langTag == "en") "searched ${outcome.rounds.size} round(s), ${outcome.pages.size} page(s)"
+                    else "${Text.num(outcome.rounds.size.toLong())} دور جستجو و ${Text.num(outcome.pages.size.toLong())} صفحه بررسی شد")
                     if (outcome.failures.isNotEmpty()) {
                         add(
                             (if (langTag == "en") "engine errors: " else "خطای موتورها: ") +
@@ -326,27 +350,6 @@ class Agent(
                         )
                     }
                 }
-            )
-        } else {
-            val citations = outcome.evidence.mapIndexed { index, item ->
-                Citation("W${index + 1}", KnowledgeBank.draftHost(item.page.url), item.page.url)
-            }
-            val headline = if (langTag == "en") {
-                "After ${outcome.rounds.size} search round(s) from ${outcome.pages.size} source(s): " +
-                    outcome.evidence.first().sentence.take(120)
-            } else {
-                "پس از ${Text.num(outcome.rounds.size.toLong())} دور جستجو از ${Text.num(outcome.pages.size.toLong())} منبع: " +
-                    outcome.evidence.first().sentence.take(120)
-            }
-            AnswerDraft(
-                intent = "web.research",
-                headline = headline,
-                facts = outcome.evidence.mapIndexed { index, item -> Fact("W${index + 1}", item.sentence.take(280)) },
-                citations = citations,
-                missing = emptyList(),
-                confidence = confidenceOf(outcome),
-                refused = false,
-                lang = langTag
             )
         }
 
@@ -375,6 +378,64 @@ class Agent(
         return AgentOutcome(answer, steps, actions, outcome.pages)
     }
 
+
+    // ---------- answer composition ----------
+
+    /** Stored claims ranked as if they were one-sentence pages, so the same gates apply. */
+    private fun knowledgeCandidates(
+        model: QuestionModel,
+        items: List<KnowledgeItem>,
+        pack: MarketPack
+    ): List<AnswerCandidate> = items.mapNotNull { item ->
+        val slot = AnswerShapes.slot(model.ask, item.claim, pack) ?: return@mapNotNull null
+        val page = ExtractedPage(url = item.url, title = item.domain, text = item.claim)
+        val coverage = model.subjectCoverage(item.claim)
+        if (coverage <= 0.0) return@mapNotNull null
+        val evidence = Evidence(item.claim, page, item.confidence)
+        AnswerCandidate(evidence, slot, coverage, true, 3.2 + 1.8 * coverage + item.confidence)
+    }.sortedByDescending { it.score }
+
+    /**
+     * The direct answer, first line: the answer span itself, then who says so and how old it is,
+     * then whether other sources disagree. Everything below it is verbatim support.
+     */
+    private fun directDraft(
+        plan: AnswerPlan,
+        model: QuestionModel,
+        outcome: ResearchOutcome,
+        langTag: String
+    ): AnswerDraft {
+        val source = plan.source
+        val domain = source?.let { KnowledgeBank.draftHost(it.page.url) } ?: "وب"
+        val when1 = Jalali.format(tools.now())
+        val agreement = if (plan.agreement > 1) {
+            if (langTag == "en") " — ${plan.agreement} independent sources agree" else " — ${Text.num(plan.agreement.toLong())} منبع مستقل همین را می‌گویند"
+        } else ""
+        val conflict = if (plan.disagreement.isNotEmpty()) {
+            val others = plan.disagreement.take(2).joinToString("، ") { "${it.first} (${it.second})" }
+            if (langTag == "en") " — another source says $others" else " — منبع دیگر می‌گوید: $others"
+        } else ""
+        val headline = if (langTag == "en") {
+            "Answer (${QuestionReader.expectedAnswerLabel(plan.ask)}): ${plan.direct} — source: $domain, checked $when1$agreement$conflict"
+        } else {
+            "پاسخ ${model.attribute?.let { "«$it»" } ?: ""}: ${plan.direct} — منبع: $domain، بازبینی $when1$agreement$conflict"
+        }
+        val supporting = plan.support.take(4)
+        return AnswerDraft(
+            intent = "web.answer",
+            headline = headline,
+            facts = supporting.mapIndexed { index, candidate -> Fact("W${index + 1}", candidate.evidence.sentence.take(280)) },
+            citations = supporting.mapIndexed { index, candidate ->
+                Citation("W${index + 1}", KnowledgeBank.draftHost(candidate.evidence.page.url), candidate.evidence.page.url)
+            },
+            missing = emptyList(),
+            confidence = (0.52 + 0.10 * plan.agreement + 0.18 * outcome.coverage -
+                (if (plan.disagreement.isNotEmpty()) 0.10 else 0.0)).coerceIn(0.35, 0.92),
+            refused = false,
+            lang = langTag
+        )
+    }
+
     /** Answers from knowledge the assistant already owns — no network, but shows the source and age. */
     private fun knowledgeAnswer(
         question: String,
@@ -382,12 +443,19 @@ class Agent(
         langTag: String,
         steps: MutableList<AgentStep>,
         actions: MutableList<String>,
-        phraser: Phraser
+        phraser: Phraser,
+        plan: AnswerPlan? = null
     ): AgentOutcome {
         val newest = items.maxOfOrNull { it.lastVerifiedAt } ?: tools.now()
         val draft = AnswerDraft(
             intent = "knowledge.answer",
-            headline = if (langTag == "en") {
+            headline = if (plan != null && plan.answered) {
+                if (langTag == "en") {
+                    "Answer: ${plan.direct} — from my knowledge base (source ${plan.source?.let { KnowledgeBank.draftHost(it.page.url) } ?: "-"}, checked ${Jalali.format(newest)})"
+                } else {
+                    "پاسخ: ${plan.direct} — از دانش ذخیره‌شده (منبع ${plan.source?.let { KnowledgeBank.draftHost(it.page.url) } ?: "-"}، بازبینی ${Jalali.format(newest)})"
+                }
+            } else if (langTag == "en") {
                 "From my knowledge base (verified ${Jalali.format(newest)}):"
             } else {
                 "از دانش ذخیره‌شده (آخرین بازبینی ${Jalali.format(newest)}):"
@@ -742,9 +810,19 @@ object Extractive {
 
     private val splitter = Regex("(?<=[.!?؟!])\\s+|\\n+")
 
-    fun sentences(text: String): List<String> =
-        text.split(splitter).map { it.replace(Regex("\\s+"), " ").trim() }
-            .filter { it.length in 40..400 }
+    fun sentences(text: String): List<String> {
+        val all = text.split(splitter).map { it.replace(Regex("\\s+"), " ").trim() }.filter { it.isNotEmpty() }
+        // Medium-sized sentences are normal prose. Short lines are usually fragments — except when
+        // they carry a fact ("قیمت: ۵۰ میلیون تومان"), which is exactly what a shop page looks like.
+        val prose = all.filter { it.length in 40..400 }
+        val shortFacts = all.filter { it.length in 10 until 40 && AnswerShapes.hasFact(it) }
+        val kept = (prose + shortFacts)
+        return when {
+            kept.isNotEmpty() -> kept
+            all.isEmpty() -> emptyList()
+            else -> all.take(3).filter { it.length in 8..400 }
+        }
+    }
 
     fun select(question: String, pages: List<ExtractedPage>, limit: Int): List<Evidence> {
         if (pages.isEmpty()) return emptyList()

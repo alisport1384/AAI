@@ -15,9 +15,9 @@
 
 ## وضعیت
 
-| مورد | v0.1.0 | v0.2.0 | v0.3.0 |
+| مورد | v0.1.0 | v0.2.0 | v0.3.0 | v0.4.0 |
 |---|---|---|---|---|
-| ساخت خودکار (GitHub Actions) | ✅ ۴۶ آزمون (`docs/REPORT-BUILD.md`) | ✅ ۹۲ آزمون (`docs/REPORT-BUILD-V2.md`) | ✅ ۱۲۳ آزمون (`docs/REPORT-BUILD-V3.md`) |
+| ساخت خودکار (GitHub Actions) | ✅ ۴۶ آزمون (`docs/REPORT-BUILD.md`) | ✅ ۹۲ آزمون (`docs/REPORT-BUILD-V2.md`) | ✅ ۱۲۳ آزمون (`docs/REPORT-BUILD-V3.md`) | ✅ ۱۳۸ آزمون (`docs/REPORT-BUILD-V4.md`) |
 | مجوزها | بدون `INTERNET` | `INTERNET` + مجوز داخلی androidx |
 | بازار | مصاحبه → `MarketPack` ↔ JSON | همان + کار کردن بدون بازار |
 | تحلیل | قیمت، ویژگی، آمار، امتیاز ارزش، هشدار | همان |
@@ -31,6 +31,7 @@
 | پژوهش خودکار | — | یک دور جستجو | **حلقهٔ شکاف‌محور** با بودجه، تا کافی‌شدن شاهد |
 | دانش بلندمدت | — | حافظهٔ کاربر | **انبار دانش وب** با TTL، اصلاح مقدار، ثبت تناقض، حذف/ویرایش دستی |
 | منبع آگهی‌ها | دستی/CSV | دستی/CSV | + **استخراج آگهی از صفحه‌های وب** |
+| فهم پرسش | قالب/نیت | قالب/نیت | هم‌پوشانی واژه‌ای | **نوع پاسخ + سوژه + شکل پاسخ**؛ پاسخ مستقیم یا امتناع دقیق |
 
 ## ساخت
 
@@ -50,6 +51,8 @@ app/src/main/java/ir/aai/hushyar/
 ├─ core/    Json · Text · Price · Similarity · Ids · Lang · Html · Http · Ranking
 ├─ domain/  Models · PackCodec · PackValidator · Interview · SelfModel · Analysis · Qa
 │           Search (Engines/SerpParser/PageExtractor/InjectionGuard) · MemoryBank
+│           QuestionModel (QuestionReader: ask type · subject · attribute)
+│           Answers (AnswerShapes · AnswerFocus · AnswerPlan)
 │           Research (DeepResearcher/ListingHarvester/ResearchBudget)
 │           Knowledge (KnowledgeItem/KnowledgeBank/Contradiction policy)
 │           Agent (AgentTools/CommandParser/Extractive) · Backup · Markdown
@@ -75,11 +78,14 @@ app/src/main/java/ir/aai/hushyar/
 |---|---|
 | [`docs/DESIGN-v2.0.md`](docs/DESIGN-v2.0.md) | سند طراحی مرجع (معماری، داده، امنیت، نقشهٔ راه) |
 | [`docs/DESIGN-v1.0.md`](docs/DESIGN-v1.0.md) | نسخهٔ اول سند (تاریخی) |
+| [`docs/V4-SCOPE.md`](docs/V4-SCOPE.md) | فهم پرسش و پاسخ مستقیم: چرا پاسخ، پاسخ نبود و چه شد |
+| [`docs/RESEARCH-v4.md`](docs/RESEARCH-v4.md) | پژوهش پیش از تغییر با منابع |
 | [`docs/V3-SCOPE.md`](docs/V3-SCOPE.md) | حلقهٔ پژوهش خودکار، انبار دانش، اصلاح و منقضی‌شدن |
 | [`docs/V2-SCOPE.md`](docs/V2-SCOPE.md) | نگاشت ۹ درخواست v0.2 به کد + انحراف‌های صادقانه |
 | [`docs/V1-SCOPE.md`](docs/V1-SCOPE.md) | دامنهٔ v0.1 و انحراف‌های فنی آن |
 | [`docs/TESTING.md`](docs/TESTING.md) | سناریوی تست دستی + آزمون تعویض بازار |
-| [`docs/REPORT-BUILD-V3.md`](docs/REPORT-BUILD-V3.md) | گزارش بیلد v0.3، خروجی آزمون‌ها، بازرسی APK |
+| [`docs/REPORT-BUILD-V4.md`](docs/REPORT-BUILD-V4.md) | گزارش بیلد v0.4 و بازرسی APK |
+| [`docs/REPORT-BUILD-V3.md`](docs/REPORT-BUILD-V3.md) | گزارش بیلد v0.3 |
 | [`docs/REPORT-BUILD-V2.md`](docs/REPORT-BUILD-V2.md) | گزارش بیلد v0.2 |
 | [`docs/REPORT-BUILD.md`](docs/REPORT-BUILD.md) | گزارش بیلد v0.1 |
 
@@ -98,6 +104,9 @@ app/src/main/java/ir/aai/hushyar/
 
 ```
 قیمت گوشی سامسونگ گلکسی S24 چقدر است؟   → آگهی محلی هست؟ پاسخ با استناد به آگهی‌ها
+                                         → نبود؟ پژوهش: نوع پاسخ=قیمت، سوژه=گوشی…
+                                           جملهٔ بی‌قیمت هرگز پاسخ نمی‌شود؛
+                                           «پاسخ: ۵۰ میلیون تومان — منبع: a.example»
 بهترین مارک چای سبز برای فشار خون چیست؟  → آگهی محلی نیست → پژوهش خودکار:
                                           دور ۱: جستجو → واکشی → شاهد
                                           شکاف: «عدد/قیمت» یا «منبع دوم»
