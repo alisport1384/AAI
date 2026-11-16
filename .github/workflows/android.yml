@@ -3,8 +3,12 @@ name: Android CI
 on:
   push:
     branches: [ main, master ]
-  pull_request:
   workflow_dispatch:
+
+# Never run two builds of the same ref at once (duplicate downloads cause Maven 429s).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
