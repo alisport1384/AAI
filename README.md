@@ -1,5 +1,7 @@
 # هوشیار (AAI)
 
+[![Android CI](https://github.com/alisport1384/AAI/actions/workflows/android.yml/badge.svg)](https://github.com/alisport1384/AAI/actions/workflows/android.yml)
+
 موتور تحلیل کالا و پرسش‌وپاسخ، **تماماً روی دستگاه**، برای یک بازار که **کاربر خودش معرفی می‌کند**.
 
 - هیچ بازاری در برنامه کامپایل نشده است.
@@ -10,7 +12,8 @@
 
 | مورد | v0.1.0 |
 |---|---|
-| ساخت خودکار (GitHub Actions) | `testDebugUnitTest` + `assembleDebug` + آپلود APK |
+| ساخت خودکار (GitHub Actions) | ✅ سبز — ۴۶ آزمون، APK ساخته و بازرسی شد (`docs/REPORT-BUILD.md`) |
+| مجوزهای APK | فقط مجوز داخلی androidx — **بدون `INTERNET`** |
 | بازار | مصاحبهٔ زمان اجرا → `MarketPack` ↔ JSON (تعویض بازار بدون کامپایل) |
 | تحلیل | نرمال‌سازی قیمت، استخراج ویژگی، یکسان‌سازی کالا، آمار قیمت، امتیاز ارزش، هشدارها |
 | پرسش‌وپاسخ | تشخیص نیت + شاهد + استناد + Critic + امتناع |
