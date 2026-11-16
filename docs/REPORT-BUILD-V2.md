@@ -25,6 +25,11 @@ commit      : 4651c0a  (feat(v0.2): on-device assistant …)
 artifact    : hushyar-debug-apk  —  9,391,950 بایت
 ```
 
+پس از این کامیت، کامیت مستندات (`7806eb0`) هم منتشر شد و run **`43931836148`** هم
+با نتیجهٔ **success** تمام شد (هر ۹ گام: Checkout، JDK، Gradle، SDK، Unit tests،
+Assemble APK، Upload APK، Upload reports). artifact همان اجرا: `hushyar-debug-apk`
+با ۹٬۳۹۱٬۹۴۷ بایت.
+
 گام‌های workflow: `Checkout → JDK 17 → Gradle 8.9 → SDK 35 → testDebugUnitTest → assembleDebug → upload APK`.
 
 ## ۳. خطاهای کامپایل و علتشان (شفاف)
