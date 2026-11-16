@@ -5,8 +5,8 @@
 | قلم | مقدار |
 |---|---|
 | وضعیت CI | ✅ **سبز** (همهٔ گام‌ها `success`) |
-| اجرا | [run 43926740031](https://github.com/alisport1384/AAI/actions/runs/43926740031) |
-| کامیت | `aa692ee` روی `main` |
+| اجرا (تأیید کد) | [run 43926740031](https://github.com/alisport1384/AAI/actions/runs/43926740031) — کامیت `aa692ee` |
+| اجرای مستندات | [run 43927262522](https://github.com/alisport1384/AAI/actions/runs/43927262522) — کامیت `448080d` ✅ سبز |
 | زمان اجرا | ۲۰۲۶-۱۱-۱۶ ۱۸:۱۴:۳۳ → ۱۸:۱۶:۵۳ (≈ ۲ دقیقه ۲۰ ثانیه) |
 | آزمون واحد | ۴۶ آزمون، ۰ شکست |
 | artifact | `hushyar-debug-apk` — ۹٬۲۳۷٬۱۴۷ بایت (فشرده) |
