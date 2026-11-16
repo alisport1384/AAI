@@ -142,15 +142,66 @@ data class Answer(
     val confidence: Double = 0.0,
     val missing: List<String> = emptyList(),
     val refused: Boolean = false,
-    val lang: String = "fa"
+    val lang: String = "fa",
+    /** How the answer was produced (agent trace, human readable). */
+    val trace: List<String> = emptyList(),
+    /** Data mutations performed while answering (audited, undoable at DB level). */
+    val actions: List<String> = emptyList()
 )
 
 data class MemoryItem(
     val id: String,
     val kind: String,
     val text: String,
-    val createdAt: Long
+    val createdAt: Long,
+    val category: String = "عمومی",
+    val tags: List<String> = emptyList(),
+    val importance: Double = 0.5,
+    val useCount: Int = 0,
+    val lastUsedAt: Long = 0L,
+    val source: String = "user"
+) {
+    val simhash: Long get() = ir.aai.hushyar.core.Similarity.simhash(ir.aai.hushyar.core.Text.contentTokens(text))
+}
+
+/** A single web result as returned by one engine adapter. */
+data class WebHit(
+    val url: String,
+    val title: String,
+    val snippet: String,
+    val engine: String,
+    val rank: Int
 )
+
+data class SearchReport(
+    val query: String,
+    val hits: List<WebHit>,
+    val perEngine: Map<String, Int> = emptyMap(),
+    val failures: Map<String, String> = emptyMap()
+) {
+    val isEmpty: Boolean get() = hits.isEmpty()
+}
+
+/** A fetched page after cleaning and trust marking. */
+data class ExtractedPage(
+    val url: String,
+    val title: String,
+    val text: String,
+    val trust: String = "untrusted",
+    val signals: List<String> = emptyList()
+)
+
+/** Event log that the assistant itself can read and export as Markdown. */
+data class LogEvent(
+    val id: Long,
+    val at: Long,
+    val kind: String,
+    val actor: String,
+    val message: String,
+    val detail: String = ""
+)
+
+data class MemoryHit(val item: MemoryItem, val score: Double)
 
 data class AuditEntry(
     val at: Long,

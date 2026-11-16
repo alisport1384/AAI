@@ -9,8 +9,14 @@ import androidx.lifecycle.viewModelScope
 import ir.aai.hushyar.core.Ids
 import ir.aai.hushyar.core.PriceParser
 import ir.aai.hushyar.core.Text
+import ir.aai.hushyar.data.AndroidTools
+import ir.aai.hushyar.data.BackupService
 import ir.aai.hushyar.data.CsvImporter
+import ir.aai.hushyar.data.HttpUrlTransport
 import ir.aai.hushyar.data.Repos
+import ir.aai.hushyar.data.Store
+import ir.aai.hushyar.domain.Agent
+import ir.aai.hushyar.domain.AgentStep
 import ir.aai.hushyar.domain.AnalysisResult
 import ir.aai.hushyar.domain.Analyzer
 import ir.aai.hushyar.domain.Answer
@@ -19,10 +25,15 @@ import ir.aai.hushyar.domain.Catalog
 import ir.aai.hushyar.domain.Interview
 import ir.aai.hushyar.domain.Listing
 import ir.aai.hushyar.domain.MarketPack
+import ir.aai.hushyar.domain.Markdown
+import ir.aai.hushyar.domain.MemoryBank
+import ir.aai.hushyar.domain.MemoryItem
+import ir.aai.hushyar.domain.LogEvent
 import ir.aai.hushyar.domain.PackBuildResult
 import ir.aai.hushyar.domain.PackCodec
 import ir.aai.hushyar.domain.ProductGroup
 import ir.aai.hushyar.domain.QaEngine
+import ir.aai.hushyar.domain.SearchCore
 import ir.aai.hushyar.domain.Resolver
 import ir.aai.hushyar.domain.SelfManifest
 import ir.aai.hushyar.domain.SelfModel
@@ -31,7 +42,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-class AppViewModel(private val repos: Repos) : ViewModel() {
+class AppViewModel(
+    private val repos: Repos,
+    private val store: Store
+) : ViewModel() {
 
     var pack by mutableStateOf<MarketPack?>(null)
         private set
@@ -57,8 +71,22 @@ class AppViewModel(private val repos: Repos) : ViewModel() {
         private set
     var loading by mutableStateOf(false)
         private set
+    var steps by mutableStateOf<List<AgentStep>>(emptyList())
+        private set
+    var memories by mutableStateOf<List<MemoryItem>>(emptyList())
+        private set
+    var events by mutableStateOf<List<LogEvent>>(emptyList())
+        private set
+    var backupFiles by mutableStateOf<List<String>>(emptyList())
+        private set
+    var dataFiles by mutableStateOf<List<String>>(emptyList())
+        private set
+    var lastMarkdown by mutableStateOf<String?>(null)
+        private set
 
     private val qa = QaEngine()
+    private val search = SearchCore(HttpUrlTransport())
+    private val tools = AndroidTools(repos, store, search)
 
     init {
         refresh()
@@ -227,20 +255,175 @@ class AppViewModel(private val repos: Repos) : ViewModel() {
         analysis = null
     }
 
+    /**
+     * The agent loop: data commands, local catalog, memory and web research, then learning.
+     * A market pack is helpful but no longer required — memory, backup and web work without one.
+     */
     fun ask(question: String) {
-        val current = pack ?: run { notice = "اول بازار را معرفی کنید."; return }
         if (question.isBlank()) return
+        steps = emptyList()
         io({
-            val ls = repos.listings()
-            val prods = Resolver.group(ls, current.priceRules)
-            val answer = qa.ask(question, Catalog(current, ls, prods))
-            repos.addMemory("episode", "پرسش: $question\nپاسخ: ${answer.text}\nامتناع: ${answer.refused}")
-            repos.audit("agent", "qa.answer", answer.intent, "refused=${answer.refused}")
-            answer
-        }) { answer ->
-            lastAnswer = answer
-            qaHistory = (listOf(question to answer) + qaHistory).take(20)
+            val agent = Agent(tools)
+            val outcome = agent.run(question, allowWeb = true)
+            val transcript = Markdown.answer(question, outcome.answer, outcome.steps, System.currentTimeMillis())
+            val file = store.writeLog("qa-${store.stamp()}", transcript)
+            repos.audit("agent", "qa.answer", outcome.answer.intent, "refused=${outcome.answer.refused} md=${file.name}")
+            outcome
+        }) { outcome ->
+            lastAnswer = outcome.answer
+            steps = outcome.steps
+            qaHistory = (listOf(question to outcome.answer) + qaHistory).take(20)
+            refreshSecondary()
         }
+    }
+
+    private fun refreshSecondary() {
+        io({
+            Triple(repos.memoryAll(300), repos.events(200), store.listBackups().map { it.name })
+        }) { (mem, evts, backups) ->
+            memories = mem
+            events = evts
+            backupFiles = backups
+            dataFiles = store.inventory()
+        }
+    }
+
+    fun refreshData() = refreshSecondary()
+
+    // ---------- data control: edit and delete individual records ----------
+
+    fun updateMemory(item: MemoryItem, newText: String, category: String) {
+        io({
+            repos.updateMemory(item.copy(text = newText.trim(), category = category))
+            repos.log("memory", "user", "ویرایش دستی یادسپاری", item.id)
+            Unit
+        }) {
+            notice = "یادسپاری ویرایش شد."
+            refreshSecondary()
+        }
+    }
+
+    fun deleteMemory(id: String) {
+        io({ repos.deleteMemory(id); Unit }) {
+            notice = "یادسپاری حذف شد."
+            refreshSecondary()
+        }
+    }
+
+    fun editListing(listing: Listing, newTitle: String, newPrice: String) {
+        val current = pack
+        io({
+            val parsed = if (current != null) PriceParser.parse(newPrice, current.priceRules) else null
+            val updated = listing.copy(
+                title = newTitle.trim().ifBlank { listing.title },
+                titleNorm = Text.normalize(newTitle.trim().ifBlank { listing.title }),
+                priceRaw = newPrice.trim().ifBlank { listing.priceRaw },
+                priceIrt = parsed?.irt ?: listing.priceIrt,
+                priceNote = parsed?.note ?: listing.priceNote
+            )
+            repos.updateListing(updated)
+            Unit
+        }) {
+            notice = "آگهی ویرایش شد."
+            refresh()
+        }
+    }
+
+    // ---------- memory, backup, logs ----------
+
+    fun consolidateMemory() {
+        io({
+            val all = repos.memoryAll(2000)
+            val result = MemoryBank.consolidate(all)
+            for (item in result.merged) repos.updateMemory(item)
+            for (id in result.droppedIds) repos.deleteMemory(id)
+            repos.log("memory", "user", "یکپارچه‌سازی حافظه", "ادغام=${result.merged.size} حذف=${result.droppedIds.size}")
+            result
+        }) { result ->
+            notice = "ادغام شد: ${result.merged.size} رکورد، حذف تکراری: ${result.droppedIds.size}"
+            refreshSecondary()
+        }
+    }
+
+    fun backup() {
+        io({ BackupService.createDetailed(repos, store, BuildConfig.VERSION_NAME) }) { result ->
+            notice = "بک‌آپ ساخته شد: ${result.file.name}\n${BackupService.summary(result.info)}"
+            lastMarkdown = result.markdown
+            refreshSecondary()
+        }
+    }
+
+    fun exportMarkdown() {
+        io({
+            val md = Markdown.fullBrain(
+                items = repos.memoryAll(2000),
+                events = repos.events(500),
+                audits = repos.auditsAll(500),
+                packs = repos.packs(),
+                listingCount = repos.listings().size,
+                generatedAt = System.currentTimeMillis()
+            )
+            val file = store.writeLog("hushyar-brain-${store.stamp()}", md)
+            repos.log("log", "user", "خروجی دفتر هوش", file.name)
+            md to file.name
+        }) { (md, name) ->
+            lastMarkdown = md
+            notice = "دفتر هوش به Markdown ذخیره شد: $name"
+            refreshSecondary()
+        }
+    }
+
+    fun restore(json: String) {
+        io({ BackupService.restore(repos, json) }) { info ->
+            notice = "بازیابی انجام شد.\n${BackupService.summary(info)}"
+            refreshSecondary()
+            refresh()
+        }
+    }
+
+    fun restoreFromText(text: String) {
+        if (text.isBlank()) { notice = "متن پشتیبان خالی است."; return }
+        restore(text)
+    }
+
+    fun restoreBackupFile(name: String) {
+        io({
+            val file = store.backupDir.listFiles()?.firstOrNull { it.name == name }
+                ?: throw IllegalArgumentException("فایل پیدا نشد: $name")
+            BackupService.restoreFromFile(repos, store, file)
+        }) { info ->
+            notice = "بازیابی از $name انجام شد.\n${BackupService.summary(info)}"
+            refreshSecondary()
+            refresh()
+        }
+    }
+
+    fun restoreFromUri(uri: android.net.Uri) {
+        io({ BackupService.restoreFromUri(repos, store, uri) }) { info ->
+            notice = "بازیابی از فایل انجام شد.\n${BackupService.summary(info)}"
+            refreshSecondary()
+            refresh()
+        }
+    }
+
+    fun inspectBackupText(text: String) {
+        io({ BackupService.inspect(text) }) { info ->
+            notice = BackupService.summary(info)
+        }
+    }
+
+    fun readBackupPreview(name: String) {
+        io({
+            val file = store.backupDir.listFiles()?.firstOrNull { it.name == name }
+                ?: throw IllegalArgumentException("فایل پیدا نشد")
+            if (file.extension == "json") file.readText(Charsets.UTF_8) else store.readBackup(file)
+        }) { json ->
+            notice = BackupService.summary(BackupService.inspect(json))
+        }
+    }
+
+    fun clearSteps() {
+        steps = emptyList()
     }
 
     fun resetAll() {
@@ -269,6 +452,6 @@ class AppViewModel(private val repos: Repos) : ViewModel() {
     )
 
     companion object {
-        fun factory(repos: Repos): ViewModelProvider.Factory = AppViewModelFactory(repos)
+        fun factory(repos: Repos, store: Store): ViewModelProvider.Factory = AppViewModelFactory(repos, store)
     }
 }

@@ -1,7 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- v0.1 هیچ مجوز شبکه‌ای درخواست نمی‌کند: تمام پردازش محلی است. -->
+    <!--
+        تنها منفذ بیرونی اپ: جستجوی وب روی موتورهای عمومی (HTTP GET).
+        هیچ SDK ابری، کلید API، تلمتری یا حساب کاربری وجود ندارد.
+        تمام پردازش، حافظه و تصمیم‌گیری روی دستگاه انجام می‌شود.
+    -->
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <application
         android:name=".HushyarApp"

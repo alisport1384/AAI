@@ -50,12 +50,8 @@ enum class Tab(val label: String, val icon: String) {
 
 @Composable
 fun AppRoot(vm: AppViewModel) {
-    val pack = vm.pack
-    if (pack == null) {
-        OnboardingScreen(vm)
-        return
-    }
-
+    // v0.2: the app is usable without a market pack (memory, web research, data control,
+    // backup). The interview lives inside the Home tab instead of blocking the whole app.
     var tab by remember { mutableStateOf(Tab.Home) }
     val analysis = vm.analysis
 
@@ -76,6 +72,7 @@ fun AppRoot(vm: AppViewModel) {
         Box(Modifier.fillMaxSize().padding(padding)) {
             when {
                 analysis != null -> AnalysisScreen(analysis, vm::closeAnalysis)
+                tab == Tab.Home && vm.pack == null -> OnboardingScreen(vm)
                 tab == Tab.Home -> HomeScreen(vm)
                 tab == Tab.Data -> DataScreen(vm)
                 tab == Tab.Ask -> AskScreen(vm)

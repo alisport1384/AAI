@@ -13,6 +13,9 @@ import ir.aai.hushyar.domain.AuditEntry
 import ir.aai.hushyar.domain.Listing
 import ir.aai.hushyar.domain.MarketPack
 import ir.aai.hushyar.domain.MemoryItem
+import ir.aai.hushyar.domain.Backup
+import ir.aai.hushyar.domain.LogEvent
+import ir.aai.hushyar.domain.MemoryBank
 import ir.aai.hushyar.domain.PackCodec
 
 /**
@@ -60,14 +63,8 @@ class Db(context: Context) : SQLiteOpenHelper(context, NAME, null, VERSION) {
             )"""
         )
         db.execSQL("CREATE INDEX idx_listing_norm ON listing(title_norm)")
-        db.execSQL(
-            """CREATE TABLE memory(
-                id TEXT PRIMARY KEY,
-                kind TEXT NOT NULL,
-                body TEXT NOT NULL,
-                created_at INTEGER NOT NULL
-            )"""
-        )
+        db.execSQL(MEMORY_TABLE)
+        db.execSQL(EVENT_TABLE)
         db.execSQL("CREATE TABLE preference(k TEXT PRIMARY KEY, v TEXT NOT NULL)")
         db.execSQL(
             """CREATE TABLE audit(
@@ -82,12 +79,49 @@ class Db(context: Context) : SQLiteOpenHelper(context, NAME, null, VERSION) {
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        // v0.1: schema is additive-only; a fresh install is the supported path.
+        // Additive-only: v0.1 data survives the upgrade, nothing is dropped.
+        if (oldVersion < 2) {
+            for (column in MEMORY_V2_COLUMNS) {
+                runCatching { db.execSQL(column) }
+            }
+            db.execSQL(EVENT_TABLE.replace("CREATE TABLE", "CREATE TABLE IF NOT EXISTS"))
+        }
     }
 
     companion object {
         private const val NAME = "hushyar.db"
-        private const val VERSION = 1
+        private const val VERSION = 2
+
+        private const val MEMORY_TABLE = """CREATE TABLE memory(
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                body TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                category TEXT NOT NULL DEFAULT 'عمومی',
+                tags TEXT NOT NULL DEFAULT '[]',
+                importance REAL NOT NULL DEFAULT 0.5,
+                use_count INTEGER NOT NULL DEFAULT 0,
+                last_used_at INTEGER NOT NULL DEFAULT 0,
+                source TEXT NOT NULL DEFAULT 'user'
+            )"""
+
+        private const val EVENT_TABLE = """CREATE TABLE event(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                at INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                actor TEXT NOT NULL,
+                message TEXT NOT NULL,
+                detail TEXT NOT NULL DEFAULT ''
+            )"""
+
+        private val MEMORY_V2_COLUMNS = listOf(
+            "ALTER TABLE memory ADD COLUMN category TEXT NOT NULL DEFAULT 'عمومی'",
+            "ALTER TABLE memory ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'",
+            "ALTER TABLE memory ADD COLUMN importance REAL NOT NULL DEFAULT 0.5",
+            "ALTER TABLE memory ADD COLUMN use_count INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE memory ADD COLUMN last_used_at INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE memory ADD COLUMN source TEXT NOT NULL DEFAULT 'user'"
+        )
     }
 }
 
@@ -192,20 +226,7 @@ class Repos(private val db: Db) {
     // ---------- listings ----------
 
     fun insertListing(listing: Listing): Boolean {
-        val values = ContentValues().apply {
-            put("id", listing.id)
-            put("title", listing.title)
-            put("title_norm", listing.titleNorm)
-            put("price_raw", listing.priceRaw)
-            if (listing.priceIrt != null) put("price_irt", listing.priceIrt) else putNull("price_irt")
-            put("price_note", listing.priceNote)
-            put("source", listing.source)
-            put("url", listing.url)
-            put("seller", listing.seller)
-            put("city", listing.city)
-            put("attrs", MiniJson.write(MiniJson.objOf(listing.attrs.mapValues { Json.Str(it.value) })))
-            put("created_at", listing.createdAt.takeIf { it > 0 } ?: now)
-        }
+        val values = listingValues(listing.copy(createdAt = listing.createdAt.takeIf { it > 0 } ?: now))
         return db.writableDatabase.insertWithOnConflict("listing", null, values, SQLiteDatabase.CONFLICT_REPLACE) > 0
     }
 
@@ -262,31 +283,179 @@ class Repos(private val db: Db) {
 
     // ---------- memory / preferences ----------
 
+    /** Backwards-compatible entry point: classification happens automatically. */
     fun addMemory(kind: String, body: String) {
-        val values = ContentValues().apply {
-            put("id", Ids.new("mem"))
-            put("kind", kind)
-            put("body", body.take(4000))
-            put("created_at", now)
-        }
-        db.writableDatabase.insertWithOnConflict("memory", null, values, SQLiteDatabase.CONFLICT_REPLACE)
+        val category = MemoryBank.classify(body, null)
+        addMemory(kind, body, category, MemoryBank.tags(body, null), MemoryBank.importance(body, true, null), "user")
+    }
+
+    fun addMemory(
+        kind: String,
+        body: String,
+        category: String,
+        tags: List<String>,
+        importance: Double,
+        source: String
+    ): MemoryItem {
+        val item = MemoryItem(
+            id = Ids.new("mem"),
+            kind = kind,
+            text = body.take(4000),
+            createdAt = now,
+            category = category,
+            tags = tags.take(14),
+            importance = importance.coerceIn(0.0, 1.0),
+            source = source
+        )
+        db.writableDatabase.insertWithOnConflict("memory", null, memoryValues(item), SQLiteDatabase.CONFLICT_REPLACE)
+        return item
+    }
+
+    private fun memoryValues(item: MemoryItem): ContentValues = ContentValues().apply {
+        put("id", item.id)
+        put("kind", item.kind)
+        put("body", item.text)
+        put("created_at", item.createdAt)
+        put("category", item.category)
+        put("tags", MiniJson.write(MiniJson.strs(item.tags), pretty = false))
+        put("importance", item.importance)
+        put("use_count", item.useCount)
+        put("last_used_at", item.lastUsedAt)
+        put("source", item.source)
     }
 
     fun memories(limit: Int = 50): List<MemoryItem> {
         db.readableDatabase.query("memory", null, null, null, null, null, "created_at DESC", limit.toString()).use { c ->
             val out = mutableListOf<MemoryItem>()
+            while (c.moveToNext()) out.add(readMemory(c))
+            return out
+        }
+    }
+
+    fun memoryAll(limit: Int = 1000): List<MemoryItem> =
+        db.readableDatabase.query("memory", null, null, null, null, null, "importance DESC, created_at DESC", limit.toString()).use { c ->
+            val out = mutableListOf<MemoryItem>()
+            while (c.moveToNext()) out.add(readMemory(c))
+            return out
+        }
+
+    private fun readMemory(c: Cursor): MemoryItem {
+        val tagsIdx = c.getColumnIndex("tags")
+        val tags = if (tagsIdx < 0) emptyList() else runCatching {
+            MiniJson.parse(c.getString(tagsIdx)).asStrings()
+        }.getOrDefault(emptyList())
+        fun text(column: String, fallback: String): String {
+            val idx = c.getColumnIndex(column)
+            return if (idx < 0) fallback else c.getString(idx) ?: fallback
+        }
+        fun real(column: String, fallback: Double): Double {
+            val idx = c.getColumnIndex(column)
+            return if (idx < 0) fallback else c.getDouble(idx)
+        }
+        fun integer(column: String, fallback: Long): Long {
+            val idx = c.getColumnIndex(column)
+            return if (idx < 0) fallback else c.getLong(idx)
+        }
+        return MemoryItem(
+            id = c.getString(c.getColumnIndexOrThrow("id")),
+            kind = c.getString(c.getColumnIndexOrThrow("kind")),
+            text = c.getString(c.getColumnIndexOrThrow("body")),
+            createdAt = c.getLong(c.getColumnIndexOrThrow("created_at")),
+            category = text("category", MemoryBank.CAT_GENERAL),
+            tags = tags,
+            importance = real("importance", 0.5),
+            useCount = integer("use_count", 0L).toInt(),
+            lastUsedAt = integer("last_used_at", 0L),
+            source = text("source", "user")
+        )
+    }
+
+    /** Direct record editing from the data-control screen. */
+    fun updateMemory(item: MemoryItem) {
+        db.writableDatabase.update("memory", memoryValues(item), "id = ?", arrayOf(item.id))
+        audit("user", "memory.update", item.id, item.text.take(200))
+    }
+
+    fun deleteMemory(id: String): Boolean {
+        val removed = db.writableDatabase.delete("memory", "id = ?", arrayOf(id)) > 0
+        if (removed) audit("user", "memory.delete", id, "")
+        return removed
+    }
+
+    fun touchMemory(ids: List<String>) {
+        if (ids.isEmpty()) return
+        val stamp = now
+        val w = db.writableDatabase
+        w.beginTransaction()
+        try {
+            for (id in ids) {
+                w.execSQL(
+                    "UPDATE memory SET use_count = use_count + 1, last_used_at = ? WHERE id = ?",
+                    arrayOf<Any>(stamp, id)
+                )
+            }
+            w.setTransactionSuccessful()
+        } finally {
+            w.endTransaction()
+        }
+    }
+
+    fun countMemories(): Int =
+        db.readableDatabase.rawQuery("SELECT COUNT(*) FROM memory", null).use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
+
+    // ---------- event log (the assistant's own .md source) ----------
+
+    fun log(kind: String, actor: String, message: String, detail: String = "") {
+        val values = ContentValues().apply {
+            put("at", now)
+            put("kind", kind)
+            put("actor", actor)
+            put("message", message.take(1000))
+            put("detail", detail.take(2000))
+        }
+        db.writableDatabase.insert("event", null, values)
+    }
+
+    fun events(limit: Int = 200): List<LogEvent> {
+        db.readableDatabase.query("event", null, null, null, null, null, "id DESC", limit.toString()).use { c ->
+            val out = mutableListOf<LogEvent>()
             while (c.moveToNext()) {
                 out.add(
-                    MemoryItem(
-                        id = c.getString(c.getColumnIndexOrThrow("id")),
+                    LogEvent(
+                        id = c.getLong(c.getColumnIndexOrThrow("id")),
+                        at = c.getLong(c.getColumnIndexOrThrow("at")),
                         kind = c.getString(c.getColumnIndexOrThrow("kind")),
-                        text = c.getString(c.getColumnIndexOrThrow("body")),
-                        createdAt = c.getLong(c.getColumnIndexOrThrow("created_at"))
+                        actor = c.getString(c.getColumnIndexOrThrow("actor")),
+                        message = c.getString(c.getColumnIndexOrThrow("message")),
+                        detail = c.getString(c.getColumnIndexOrThrow("detail"))
                     )
                 )
             }
             return out
         }
+    }
+
+    fun clearEvents() {
+        db.writableDatabase.delete("event", null, null)
+    }
+
+    // ---------- listings (edit in place) ----------
+
+    fun updateListing(listing: Listing) {
+        val values = ContentValues().apply {
+            put("title", listing.title)
+            put("title_norm", Text.normalize(listing.title))
+            put("price_raw", listing.priceRaw)
+            put("price_irt", listing.priceIrt)
+            put("price_note", listing.priceNote)
+            put("source", listing.source)
+            put("url", listing.url)
+            put("seller", listing.seller)
+            put("city", listing.city)
+            put("attrs", MiniJson.write(MiniJson.objOf(listing.attrs.mapValues { MiniJson.str(it.value) }), pretty = false))
+        }
+        db.writableDatabase.update("listing", values, "id = ?", arrayOf(listing.id))
+        audit("user", "listing.update", listing.id, listing.title.take(160))
     }
 
     fun putPreference(key: String, value: String) {
@@ -336,11 +505,126 @@ class Repos(private val db: Db) {
         val w = db.writableDatabase
         w.beginTransaction()
         try {
-            listOf("listing", "pack", "interview", "memory", "preference", "audit").forEach { w.delete(it, null, null) }
+            listOf("listing", "pack", "interview", "memory", "preference", "audit", "event").forEach { w.delete(it, null, null) }
             w.setTransactionSuccessful()
         } finally {
             w.endTransaction()
         }
+    }
+
+    // ---------- backup / restore ----------
+
+    fun packsAll(): List<MarketPack> =
+        db.readableDatabase.query("pack", arrayOf("body"), null, null, null, null, "created_at ASC").use { c ->
+            val out = mutableListOf<MarketPack>()
+            while (c.moveToNext()) decodePack(c.getString(0))?.let { out.add(it) }
+            return out
+        }
+
+    fun activePackId(): String? =
+        db.readableDatabase.query("pack", arrayOf("id"), "active = 1", null, null, null, null).use { c ->
+            if (c.moveToFirst()) c.getString(0) else null
+        }
+
+    fun allAnswers(): Map<String, String> = answers()
+
+    fun allPreferences(): Map<String, String> =
+        db.readableDatabase.query("preference", null, null, null, null, null, null).use { c ->
+            val out = LinkedHashMap<String, String>()
+            while (c.moveToNext()) out[c.getString(c.getColumnIndexOrThrow("k"))] = c.getString(c.getColumnIndexOrThrow("v"))
+            out
+        }
+
+    fun auditsAll(limit: Int = 2000): List<AuditEntry> = audits(limit)
+
+    /** Everything the app knows, ready to be sealed by [Backup]. */
+    fun snapshot(): Backup.Snapshot = Backup.Snapshot(
+        packs = packsAll(),
+        activePackId = activePackId(),
+        listings = listings(),
+        memory = memoryAll(5000),
+        logs = events(5000),
+        audits = auditsAll(5000),
+        answers = allAnswers(),
+        preferences = allPreferences()
+    )
+
+    /**
+     * Restore is a full replacement inside one transaction: either the whole backup lands or
+     * the previous state stays intact. No partial brain.
+     */
+    fun restore(snapshot: Backup.Snapshot) {
+        val w = db.writableDatabase
+        w.beginTransaction()
+        try {
+            listOf("listing", "pack", "interview", "memory", "preference", "audit", "event").forEach { w.delete(it, null, null) }
+            for (pack in snapshot.packs) {
+                val values = ContentValues().apply {
+                    put("id", pack.id)
+                    put("name", pack.name)
+                    put("version", pack.version)
+                    put("body", PackCodec.encode(pack, pretty = false))
+                    put("active", if (pack.id == snapshot.activePackId) 1 else 0)
+                    put("created_at", pack.createdAt.takeIf { it > 0 } ?: now)
+                }
+                w.insertWithOnConflict("pack", null, values, SQLiteDatabase.CONFLICT_REPLACE)
+            }
+            for (listing in snapshot.listings) {
+                w.insertWithOnConflict("listing", null, listingValues(listing), SQLiteDatabase.CONFLICT_REPLACE)
+            }
+            for (item in snapshot.memory) {
+                w.insertWithOnConflict("memory", null, memoryValues(item), SQLiteDatabase.CONFLICT_REPLACE)
+            }
+            for (event in snapshot.logs) {
+                val values = ContentValues().apply {
+                    put("at", event.at)
+                    put("kind", event.kind)
+                    put("actor", event.actor)
+                    put("message", event.message)
+                    put("detail", event.detail)
+                }
+                w.insert("event", null, values)
+            }
+            for (audit in snapshot.audits) {
+                val values = ContentValues().apply {
+                    put("at", audit.at)
+                    put("actor", audit.actor)
+                    put("action", audit.action)
+                    put("target", audit.target)
+                    put("detail", audit.detail)
+                }
+                w.insert("audit", null, values)
+            }
+            for ((k, v) in snapshot.answers) {
+                w.insertWithOnConflict("interview", null, ContentValues().apply {
+                    put("k", k); put("v", v); put("updated_at", now)
+                }, SQLiteDatabase.CONFLICT_REPLACE)
+            }
+            for ((k, v) in snapshot.preferences) {
+                w.insertWithOnConflict("preference", null, ContentValues().apply {
+                    put("k", k); put("v", v)
+                }, SQLiteDatabase.CONFLICT_REPLACE)
+            }
+            w.setTransactionSuccessful()
+        } finally {
+            w.endTransaction()
+        }
+        audit("user", "backup.restore", snapshot.activePackId ?: "-", "پک:${snapshot.packs.size} آگهی:${snapshot.listings.size} حافظه:${snapshot.memory.size}")
+    }
+
+    private fun listingValues(listing: Listing): ContentValues = ContentValues().apply {
+        put("id", listing.id)
+        put("title", listing.title)
+        put("title_norm", listing.titleNorm.ifBlank { Text.normalize(listing.title) })
+        put("price_raw", listing.priceRaw)
+        put("price_irt", listing.priceIrt)
+        put("price_note", listing.priceNote)
+        put("source", listing.source)
+        put("url", listing.url)
+        put("seller", listing.seller)
+        put("city", listing.city)
+        put("attrs", MiniJson.write(MiniJson.objOf(listing.attrs.mapValues { MiniJson.str(it.value) }), pretty = false))
+        put("created_at", listing.createdAt)
     }
 }
 

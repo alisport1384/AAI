@@ -10,6 +10,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import ir.aai.hushyar.data.Repos
+import ir.aai.hushyar.data.Store
 import ir.aai.hushyar.ui.AppRoot
 import ir.aai.hushyar.ui.HushyarTheme
 
@@ -21,7 +22,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             HushyarTheme {
                 CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
-                    val vm: AppViewModel = viewModel(factory = AppViewModel.factory(app.repos))
+                    val vm: AppViewModel = viewModel(factory = AppViewModel.factory(app.repos, app.store))
                     AppRoot(vm)
                 }
             }
@@ -29,9 +30,9 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-class AppViewModelFactory(private val repos: Repos) : ViewModelProvider.Factory {
+class AppViewModelFactory(private val repos: Repos, private val store: Store) : ViewModelProvider.Factory {
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         @Suppress("UNCHECKED_CAST")
-        return AppViewModel(repos) as T
+        return AppViewModel(repos, store) as T
     }
 }
