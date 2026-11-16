@@ -6,6 +6,11 @@ import ir.aai.hushyar.domain.AgentTools
 import ir.aai.hushyar.domain.Catalog
 import ir.aai.hushyar.domain.Engines
 import ir.aai.hushyar.domain.ExtractedPage
+import ir.aai.hushyar.domain.KnowledgeBank
+import ir.aai.hushyar.domain.KnowledgeDecision
+import ir.aai.hushyar.domain.KnowledgeItem
+import ir.aai.hushyar.domain.KnowledgeResult
+import ir.aai.hushyar.domain.ResearchBudget
 import ir.aai.hushyar.domain.Interview
 import ir.aai.hushyar.domain.Listing
 import ir.aai.hushyar.domain.LogEvent
@@ -27,10 +32,14 @@ private const val NOW = 1_700_000_000_000L
 class FakeTools(
     private val pack: MarketPack,
     private val search: SearchCore,
-    private var listings: List<Listing> = emptyList()
+    var listings: List<Listing> = emptyList(),
+    var budget: ResearchBudget = ResearchBudget.BALANCED
 ) : AgentTools {
 
+    override fun researchBudget(): ResearchBudget = budget
+
     val memories = mutableListOf<MemoryItem>()
+    val knowledge = mutableListOf<KnowledgeItem>()
     val logs = mutableListOf<LogEvent>()
     var backupCalls = 0
     var exportedMarkdown = "# لاگ\n"
@@ -76,6 +85,30 @@ class FakeTools(
     override fun memoryAll(limit: Int): List<MemoryItem> = memories.take(limit)
 
     override fun memoryDelete(id: String): Boolean = memories.removeAll { it.id == id }
+
+    override fun knowledgeAnswerable(question: String, limit: Int): List<KnowledgeItem> =
+        KnowledgeBank.answerable(question, knowledge, clock, limit)
+
+    override fun knowledgeAll(limit: Int): List<KnowledgeItem> = knowledge.take(limit)
+
+    override fun knowledgeStale(limit: Int): List<KnowledgeItem> =
+        KnowledgeBank.staleItems(knowledge, clock).take(limit)
+
+    override fun knowledgeStore(item: KnowledgeItem): KnowledgeResult {
+        val merge = KnowledgeBank.merge(knowledge, item)
+        if (merge.decision != KnowledgeDecision.IGNORE) {
+            knowledge.clear()
+            knowledge.addAll(merge.items)
+        }
+        return KnowledgeResult(merge.touchedId ?: item.id, merge.decision, merge.decision.name)
+    }
+
+    override fun knowledgeDelete(id: String): Boolean = knowledge.removeAll { it.id == id }
+
+    override fun insertListings(items: List<Listing>): Int {
+        listings = listings + items
+        return items.size
+    }
 
     override fun memoryTouch(ids: List<String>) {
         for (id in ids) {
@@ -217,7 +250,9 @@ class AgentTest {
         assertTrue(outcome.steps.any { it.tool == "web.fetch" })
         assertTrue(outcome.pages.isNotEmpty())
         // every bullet must quote a fetched page verbatim (extractive, not generative)
-        assertTrue(answer.bullets.all { bullet ->
+        val evidenceBullets = answer.bullets.filter { it.startsWith("W") }
+        assertTrue(evidenceBullets.isNotEmpty())
+        assertTrue(evidenceBullets.all { bullet ->
             val sentence = bullet.substringAfter(": ", bullet)
             outcome.pages.any { it.text.contains(sentence) }
         })
@@ -293,5 +328,178 @@ class AgentTest {
             "و ذخیره کن این نکته را برای بعد"
         val outcome = Agent(tools).run(long)
         assertFalse(outcome.answer.intent == "memory.write")
+    }
+
+    // ---------- v0.3: knowledge, deep research, harvesting ----------
+
+    private fun toolsFor(routes: Map<String, Pair<Int, String>>, budget: ResearchBudget = ResearchBudget.BALANCED): FakeTools {
+        val core = SearchCore(FakeTransport(routes), listOf(Engines.byId("google")!!, Engines.byId("ddg")!!), 0L, {})
+        return FakeTools(pack, core, budget = budget)
+    }
+
+    private val priceyArticle = """
+        <html><head><title>مرور گوشی</title></head><body><article>
+        <p>قیمت گوشی سامسونگ گلکسی S24 در بازار امروز حدود ۵۰ میلیون تومان است و گارانتی رسمی هجده ماهه دارد.</p>
+        <p>این گوشی حافظه ۲۵۶ گیگابایت و رم ۸ گیگابایت دارد و برای کارهای روزمره و بازی‌های معمول کاملاً کافی است.</p>
+        <p>دوربین اصلی این مدل ۵۰ مگاپیکسل است و باتری آن با استفادهٔ متعادل یک روز کامل دوام می‌آورد.</p>
+        </article></body></html>
+    """.trimIndent()
+
+    @Test
+    fun webEvidenceBecomesCategorisedKnowledge() {
+        val tools = toolsFor(
+            mapOf(
+                "https://www.google.com/" to (200 to serp),
+                "https://html.duckduckgo.com/" to (200 to serp),
+                "https://example.com/" to (200 to article),
+                "https://shop.example.org/" to (200 to article)
+            )
+        )
+        val outcome = Agent(tools).run("قیمت گوشی سامسونگ گلکسی S24 چقدر است؟")
+        assertFalse(outcome.answer.refused)
+        assertTrue(tools.knowledge.isNotEmpty())
+        assertTrue(tools.knowledge.any { it.category.isNotBlank() })
+        assertTrue(tools.knowledge.any { it.domain.isNotBlank() })
+        assertTrue(tools.knowledge.any { it.numericValue != null })
+        assertTrue(outcome.answer.learned.isNotEmpty())
+        assertTrue(outcome.answer.actions.any { it.startsWith("knowledge.") })
+    }
+
+    @Test
+    fun storedKnowledgeAnswersLaterWithoutSearchingAgain() {
+        val tools = toolsFor(
+            mapOf(
+                "https://www.google.com/" to (200 to serp),
+                "https://html.duckduckgo.com/" to (200 to serp),
+                "https://example.com/" to (200 to article),
+                "https://shop.example.org/" to (200 to article)
+            )
+        )
+        val agent = Agent(tools)
+        val first = agent.run("قیمت گوشی سامسونگ گلکسی S24 چقدر است؟")
+        assertFalse(first.answer.refused)
+        val stored = tools.knowledge.size
+        assertTrue(stored > 0)
+        val searchHitsAfterFirst = tools.logs.count { it.kind == "web" }
+
+        val second = agent.run("قیمت گوشی سامسونگ گلکسی S24 چقدر است؟")
+        assertFalse(second.answer.refused)
+        assertEquals("knowledge.answer", second.answer.intent)
+        assertEquals(searchHitsAfterFirst, tools.logs.count { it.kind == "web" })
+        assertTrue(second.answer.bullets.any { it.contains("بدون جستجوی تازه") })
+        assertTrue(stored == tools.knowledge.size)
+    }
+
+    @Test
+    fun staleKnowledgeIsRefreshedAndCorrectedByFresherSource() {
+        val tools = toolsFor(
+            mapOf(
+                "https://www.google.com/" to (200 to serp),
+                "https://html.duckduckgo.com/" to (200 to serp),
+                "https://example.com/" to (200 to priceyArticle),
+                "https://shop.example.org/" to (200 to priceyArticle)
+            )
+        )
+        val old = KnowledgeItem(
+            id = "k-old",
+            topic = KnowledgeBank.topicKey("قیمت گوشی سامسونگ گلکسی S24 چقدر است؟"),
+            question = "قیمت گوشی سامسونگ گلکسی S24 چقدر است؟",
+            claim = "قیمت گوشی سامسونگ گلکسی S24 حدود ۳۰ میلیون تومان است",
+            category = MemoryBank.CAT_FACT,
+            numericValue = 30_000_000.0,
+            unit = "تومان",
+            url = "https://old.example/x",
+            domain = "old.example",
+            confidence = 0.55,
+            createdAt = NOW - 60L * 86_400_000L,
+            lastVerifiedAt = NOW - 60L * 86_400_000L
+        )
+        tools.knowledgeStore(old)
+        tools.advance(61L * 86_400_000L)
+        assertTrue(tools.knowledgeStale(5).isNotEmpty())
+
+        val outcome = Agent(tools).run("بروزرسانی کن")
+        assertEquals("knowledge.refresh", outcome.answer.intent)
+        assertTrue(outcome.answer.text.contains("بروزرسانی"))
+        assertTrue(outcome.answer.actions.any { it.startsWith("knowledge.") })
+        assertTrue(tools.knowledge.any { it.supersededById != null })
+        val active = tools.knowledge.filter { it.fresh && it.numericValue != null }
+        assertTrue(active.isNotEmpty())
+    }
+
+    @Test
+    fun researchCommandUsesTheWebEvenWhenListingsCouldAnswer() {
+        val tools = toolsFor(
+            mapOf(
+                "https://www.google.com/" to (200 to serp),
+                "https://html.duckduckgo.com/" to (200 to serp),
+                "https://example.com/" to (200 to article),
+                "https://shop.example.org/" to (200 to article)
+            ),
+            ResearchBudget.DEEP
+        )
+        tools.listings = listOf(
+            listing("گوشی سامسونگ گلکسی S24 حافظه 256", 50_000_000),
+            listing("گوشی سامسونگ گلکسی S24 حافظه 256", 51_000_000)
+        )
+        val outcome = Agent(tools).run("تحقیق کن: قیمت گوشی سامسونگ گلکسی S24")
+        assertTrue(outcome.steps.any { it.tool == "research.start" })
+        assertTrue(outcome.steps.any { it.tool == "web.search" })
+        assertFalse(outcome.answer.refused)
+    }
+
+    @Test
+    fun webPagesWithExplicitPriceFillTheAdsSection() {
+        val tools = toolsFor(
+            mapOf(
+                "https://www.google.com/" to (200 to serp),
+                "https://html.duckduckgo.com/" to (200 to serp),
+                "https://example.com/" to (200 to priceyArticle),
+                "https://shop.example.org/" to (200 to priceyArticle)
+            )
+        )
+        val outcome = Agent(tools).run("قیمت گوشی سامسونگ گلکسی S24 چقدر است؟")
+        assertTrue(outcome.answer.actions.any { it.startsWith("listing.harvest:") })
+        assertTrue(tools.listings.isNotEmpty())
+        assertTrue(tools.listings.all { it.source.startsWith("وب:") })
+        assertTrue(tools.listings.all { it.url != null })
+        assertTrue(tools.listings.any { it.priceIrt == 50_000_000L })
+    }
+
+    @Test
+    fun knowledgeReportListsWhatWasLearned() {
+        val tools = toolsFor(
+            mapOf(
+                "https://www.google.com/" to (200 to serp),
+                "https://html.duckduckgo.com/" to (200 to serp),
+                "https://example.com/" to (200 to article),
+                "https://shop.example.org/" to (200 to article)
+            )
+        )
+        Agent(tools).run("قیمت گوشی سامسونگ گلکسی S24 چقدر است؟")
+        val report = Agent(tools).run("چه چیزهایی یاد گرفتی؟")
+        assertEquals("knowledge.list", report.answer.intent)
+        assertTrue(report.answer.bullets.isNotEmpty())
+        assertTrue(report.answer.citations.isNotEmpty())
+    }
+
+    @Test
+    fun deepResearchReportsWhyItStopped() {
+        val tools = toolsFor(
+            mapOf(
+                "https://www.google.com/" to (200 to serp),
+                "https://html.duckduckgo.com/" to (200 to serp),
+                "https://example.com/" to (200 to article),
+                "https://shop.example.org/" to (200 to article)
+            )
+        )
+        val outcome = Agent(tools).run("بهترین مارک چای سبز برای فشار خون چیست؟")
+        assertFalse(outcome.answer.refused)
+        assertTrue(
+            outcome.answer.bullets.any {
+                it.contains("متوقف") || it.contains("کافی") || it.contains("بودجه") || it.contains("تازه")
+            }
+        )
+        assertTrue(outcome.steps.any { it.tool == "knowledge.store" })
     }
 }

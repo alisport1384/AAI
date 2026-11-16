@@ -34,6 +34,7 @@ import androidx.compose.ui.unit.dp
 import ir.aai.hushyar.AppViewModel
 import ir.aai.hushyar.core.Jalali
 import ir.aai.hushyar.core.Text as Txt
+import ir.aai.hushyar.domain.KnowledgeItem
 import ir.aai.hushyar.domain.Listing
 import ir.aai.hushyar.domain.MemoryBank
 import ir.aai.hushyar.domain.MemoryItem
@@ -136,6 +137,7 @@ fun OnboardingScreen(vm: AppViewModel) {
 
 private enum class DataTab(val label: String) {
     Listings("آگهی‌ها"),
+    Knowledge("دانش"),
     Memory("حافظه"),
     Backup("پشتیبان"),
     Log("لاگ")
@@ -159,6 +161,7 @@ fun DataScreen(vm: AppViewModel) {
         HorizontalDivider()
         when (tab) {
             DataTab.Listings -> ListingsTab(vm)
+            DataTab.Knowledge -> KnowledgeTab(vm)
             DataTab.Memory -> MemoryTab(vm)
             DataTab.Backup -> BackupTab(vm)
             DataTab.Log -> LogTab(vm)
@@ -282,6 +285,119 @@ private fun ListingsTab(vm: AppViewModel) {
             Button(
                 onClick = {
                     vm.editListing(listing, editTitle, editPrice)
+                    editing = null
+                },
+                modifier = Modifier.weight(1f)
+            ) { Text("ذخیره") }
+            OutlinedButton(onClick = { editing = null }) { Text("انصراف") }
+        }
+    }
+}
+
+@Composable
+private fun KnowledgeTab(vm: AppViewModel) {
+    var editing by remember { mutableStateOf<KnowledgeItem?>(null) }
+    var editClaim by remember { mutableStateOf("") }
+    var editCategory by remember { mutableStateOf(MemoryBank.CAT_FACT) }
+    var query by remember { mutableStateOf("") }
+
+    LaunchedEffect(Unit) { vm.refreshData() }
+
+    SectionTitle("دانش هوش (${Txt.numEn(vm.knowledge.size.toLong())})")
+    Body("این‌ها را خودِ هوش از وب پیدا کرده، دسته‌بندی کرده و ذخیره کرده است. هر ردیف منبع، تاریخ بازبینی و تعداد منابع هم‌رأی دارد؛ ردیف منسوخ، تاریخ نگه داشته می‌شود نه پاک.")
+    Body(vm.knowledgeSummary())
+
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        listOf("quick" to "سریع", "balanced" to "متعادل", "deep" to "عمیق").forEach { (key, label) ->
+            FilterChip(
+                selected = vm.researchDepth == key,
+                onClick = { vm.chooseResearchDepth(key) },
+                label = { Text(label) }
+            )
+        }
+    }
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = { vm.refreshKnowledge() }, enabled = !vm.loading, modifier = Modifier.weight(1f)) {
+            Text("بروزرسانی کهنه‌ها")
+        }
+        OutlinedButton(onClick = { vm.exportMarkdown() }, modifier = Modifier.weight(1f)) {
+            Text("خروجی .md")
+        }
+    }
+
+    OutlinedTextField(
+        value = query,
+        onValueChange = { query = it },
+        label = { Text("جستجو در دانش") },
+        modifier = Modifier.fillMaxWidth(),
+        singleLine = true
+    )
+
+    val shown = if (query.isBlank()) vm.knowledge else vm.knowledge.filter {
+        it.claim.contains(query, ignoreCase = true) || it.domain.contains(query, ignoreCase = true) ||
+            it.category.contains(query)
+    }
+    if (shown.isEmpty()) Body("هنوز چیزی از وب یاد نگرفته‌ام؛ یک پرسش بپرس یا بنویس «تحقیق کن: ...».")
+
+    shown.take(80).forEach { item ->
+        Card(
+            Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = if (item.supersededById != null) MaterialTheme.colorScheme.surface
+                else MaterialTheme.colorScheme.surfaceVariant
+            )
+        ) {
+            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(item.claim, style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    "${item.category} • ${item.domain.ifBlank { "—" }} • بازبینی ${Jalali.format(item.lastVerifiedAt)}" +
+                        " • اعتماد ${"%.2f".format(item.confidence)} • منابع ${Txt.numEn(item.sourceCount.toLong())}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (item.numericValue != null) {
+                    Text(
+                        "مقدار عددی: ${Txt.num(item.numericValue.toLong())} ${item.unit.orEmpty()}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
+                }
+                if (item.supersededById != null) {
+                    Text("منسوخ (با دادهٔ تازه‌تر جایگزین شد)", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = {
+                        editing = item
+                        editClaim = item.claim
+                        editCategory = item.category
+                    }) { Text("ویرایش") }
+                    TextButton(onClick = { vm.deleteKnowledge(item.id) }) { Text("حذف") }
+                }
+            }
+        }
+    }
+
+    editing?.let { item ->
+        SectionTitle("ویرایش ${item.id}")
+        OutlinedTextField(
+            value = editClaim,
+            onValueChange = { editClaim = it },
+            label = { Text("متن دانش") },
+            modifier = Modifier.fillMaxWidth().height(120.dp)
+        )
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            MemoryBank.categories.take(6).forEach { category ->
+                FilterChip(
+                    selected = editCategory == category,
+                    onClick = { editCategory = category },
+                    label = { Text(category) }
+                )
+            }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                onClick = {
+                    vm.updateKnowledge(item, editClaim, editCategory)
                     editing = null
                 },
                 modifier = Modifier.weight(1f)
@@ -540,8 +656,9 @@ fun AskScreen(vm: AppViewModel) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             listOf(
                 "ذخیره کن: سقف بودجه‌ام ۲۰ میلیون است",
-                "چه چیزی یادت مانده؟",
-                "بک‌آپ بگیر"
+                "تحقیق کن: قیمت گوشی سامسونگ S24",
+                "بروزرسانی کن",
+                "چه چیزهایی یاد گرفتی؟"
             ).forEach { sample ->
                 TextButton(onClick = { question = sample }) {
                     Text(sample.take(18), style = MaterialTheme.typography.labelSmall)
@@ -573,6 +690,10 @@ fun AskScreen(vm: AppViewModel) {
                     if (a.missing.isNotEmpty()) {
                         Text("کمبودها", style = MaterialTheme.typography.titleMedium)
                         a.missing.forEach { BulletRow(it) }
+                    }
+                    if (a.learned.isNotEmpty()) {
+                        Text("آنچه آموختم", style = MaterialTheme.typography.titleMedium)
+                        a.learned.forEach { BulletRow(it) }
                     }
                     if (a.actions.isNotEmpty()) {
                         Text("تغییرات داده", style = MaterialTheme.typography.titleMedium)

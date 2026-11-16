@@ -146,7 +146,9 @@ data class Answer(
     /** How the answer was produced (agent trace, human readable). */
     val trace: List<String> = emptyList(),
     /** Data mutations performed while answering (audited, undoable at DB level). */
-    val actions: List<String> = emptyList()
+    val actions: List<String> = emptyList(),
+    /** What the assistant learned or corrected while answering (knowledge store deltas). */
+    val learned: List<String> = emptyList()
 )
 
 data class MemoryItem(

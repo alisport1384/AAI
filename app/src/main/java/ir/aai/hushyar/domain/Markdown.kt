@@ -105,6 +105,36 @@ object Markdown {
             for (action in answer.actions) append("- ").append(action).append('\n')
             append('\n')
         }
+        if (answer.learned.isNotEmpty()) {
+            append("### آنچه آموختم\n\n")
+            for (line in answer.learned) append("- ").append(line.line()).append('\n')
+            append('\n')
+        }
+    }
+
+    /** Knowledge the assistant acquired by itself, grouped by category, with source and age. */
+    fun knowledge(items: List<KnowledgeItem>, now: Long): String = buildString {
+        append(head("دانش هوشیار", now, listOf("تعداد" to Text.num(items.size.toLong()))))
+        if (items.isEmpty()) {
+            append("هنوز چیزی از وب یاد نگرفته‌ام.\n")
+            return@buildString
+        }
+        for ((category, group) in items.groupBy { it.category }.toList().sortedByDescending { it.second.size }) {
+            append("## ").append(category).append(" (").append(Text.num(group.size.toLong())).append(")\n\n")
+            for (item in group.sortedByDescending { it.lastVerifiedAt }) {
+                append("- ").append(item.claim.line()).append('\n')
+                append("  - منبع: ").append(item.domain.ifBlank { "—" })
+                if (item.url.isNotBlank()) append(" — ").append(item.url)
+                append('\n')
+                append("  - بازبینی: ").append(Jalali.format(item.lastVerifiedAt))
+                append(" | اعتماد: ").append(String.format("%.2f", item.confidence))
+                append(" | منابع هم‌رأی: ").append(Text.num(item.sourceCount.toLong())).append('\n')
+                if (item.supersededById != null) append("  - وضعیت: با دادهٔ تازه‌تر جایگزین شد (`").append(item.supersededById).append("`)\n")
+                if (item.tags.isNotEmpty()) append("  - برچسب: ").append(item.tags.joinToString("، ")).append('\n')
+                append("  - شناسه: `").append(item.id).append("`\n")
+            }
+            append('\n')
+        }
     }
 
     fun backupInfo(info: Backup.Info): String = buildString {
@@ -120,15 +150,26 @@ object Markdown {
         audits: List<AuditEntry>,
         packs: List<Triple<String, String, Int>>,
         listingCount: Int,
-        generatedAt: Long
+        generatedAt: Long,
+        knowledge: List<KnowledgeItem> = emptyList()
     ): String = buildString {
-        append(head("دفتر هوشیار", generatedAt, listOf("بسته‌های بازار" to Text.num(packs.size.toLong()), "آگهی‌ها" to Text.num(listingCount.toLong()))))
+        append(
+            head(
+                "دفتر هوشیار", generatedAt,
+                listOf(
+                    "بسته‌های بازار" to Text.num(packs.size.toLong()),
+                    "آگهی‌ها" to Text.num(listingCount.toLong()),
+                    "دانسته‌ها" to Text.num(knowledge.size.toLong())
+                )
+            )
+        )
         append("## بسته‌های بازار\n\n")
         if (packs.isEmpty()) append("—\n\n") else {
             for ((id, name, version) in packs) append("- ").append(name).append(" (`").append(id).append("`) نسخهٔ ").append(version).append('\n')
             append('\n')
         }
         append(memory(items).substringAfter("\n\n"))
+        append(knowledge(knowledge, generatedAt).substringAfter("\n\n"))
         append("## ممیزی تغییرات داده\n\n")
         if (audits.isEmpty()) append("—\n\n")
         for (audit in audits) {

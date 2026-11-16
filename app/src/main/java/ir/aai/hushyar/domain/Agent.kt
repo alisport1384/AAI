@@ -1,5 +1,6 @@
 package ir.aai.hushyar.domain
 
+import ir.aai.hushyar.core.Jalali
 import ir.aai.hushyar.core.Lang
 import ir.aai.hushyar.core.LangDetect
 import ir.aai.hushyar.core.Lexicon
@@ -22,36 +23,65 @@ data class AgentOutcome(
     val pages: List<ExtractedPage> = emptyList()
 )
 
+/** What happened to one learned item when it was merged into the knowledge store. */
+data class KnowledgeResult(val id: String, val decision: KnowledgeDecision, val summary: String)
+
 /**
  * The only way the agent can touch the world. Each function is implemented by the app with
- * SQLite/OkHttp; tests implement it in memory, so the whole loop is testable without Android.
+ * SQLite/files/HTTP; tests implement it in memory, so the whole loop is testable without
+ * Android and without a network.
  */
 interface AgentTools {
     fun now(): Long
     fun catalog(): Catalog
+
     fun memoryWrite(kind: String, text: String, source: String): MemoryItem
     fun memorySearch(query: String, limit: Int): List<MemoryHit>
     fun memoryAll(limit: Int): List<MemoryItem>
     fun memoryDelete(id: String): Boolean
     fun memoryTouch(ids: List<String>)
+
+    /** Fresh, question-relevant knowledge the assistant acquired by itself. */
+    fun knowledgeAnswerable(question: String, limit: Int): List<KnowledgeItem>
+    fun knowledgeAll(limit: Int): List<KnowledgeItem>
+    fun knowledgeStale(limit: Int): List<KnowledgeItem>
+
+    /** Merge one observation into the store; the decision (NEW/CORRECT/…) is reported back. */
+    fun knowledgeStore(item: KnowledgeItem): KnowledgeResult
+    fun knowledgeDelete(id: String): Boolean
+
     fun webSearch(query: String, langTag: String): SearchReport
     fun fetchPage(url: String, langTag: String): ExtractedPage?
+    fun insertListings(listings: List<Listing>): Int
+
     fun logAppend(kind: String, actor: String, message: String, detail: String)
     fun logRecent(limit: Int): List<LogEvent>
     fun backupNow(): String
     fun exportLogMarkdown(): String
+
+    /** "سریع / متعادل / عمیق" — comes from user preferences. */
+    fun researchBudget(): ResearchBudget
 }
 
 /**
- * Tool-using loop: parse command → act on data → or gather evidence (memory, catalog, web)
- * → verify → answer with citations → learn. Every branch is deterministic, so a failure is
- * reproducible and a refusal is explainable.
+ * The agent loop of v0.3.
+ *
+ * ```text
+ * question
+ *   ├─ data command?        → act on the app's own data (save/forget/backup/log/…)
+ *   ├─ local catalog (آگهی‌ها) → exact, offline answer with citations
+ *   ├─ memory                → durable user preferences
+ *   ├─ knowledge store       → facts the assistant itself found earlier, if still fresh
+ *   └─ autonomous research   → search · fetch · score · find gaps · search again …
+ *                              → answer with citations → categorize → save → revise
+ * ```
+ *
+ * Every branch is deterministic: same inputs, same answer. Refusals are explicit.
  */
 class Agent(
     private val tools: AgentTools,
     private val phraserFactory: (String) -> Phraser = { TemplatePhraser(it) },
-    private val maxPages: Int = 3,
-    private val maxEvidence: Int = 4
+    private val directAnswerCoverage: Double = 0.55
 ) {
 
     private val qa = QaEngine()
@@ -63,7 +93,8 @@ class Agent(
         val phraser = phraserFactory(langTag)
         val steps = mutableListOf<AgentStep>()
         val actions = mutableListOf<String>()
-        val pack = tools.catalog().pack
+        val catalog = tools.catalog()
+        val pack = catalog.pack
 
         fun step(thought: String, tool: String, args: Map<String, String> = emptyMap(), observation: String = "") {
             steps.add(AgentStep(steps.size + 1, thought, tool, args, observation.take(600)))
@@ -71,25 +102,59 @@ class Agent(
 
         step("دریافت پرسش و تشخیص زبان", "input", mapOf("lang" to langTag, "text" to question.take(120)), "زبان: $langTag")
 
-        // ---- 1. data commands: the assistant edits the app's own data ----
+        // Same recorder passed down to the research/refresh paths, so every round is visible.
+        val recorder: (String, String, Map<String, String>, String) -> Unit =
+            { thought, tool, args, observation -> step(thought, tool, args, observation) }
+
+        // ---- 1. data commands ----
         val command = CommandParser.parse(question)
         if (command != null) {
-            val recorder: (String, String, Map<String, String>, String) -> Unit =
-                { thought, tool, args, observation -> step(thought, tool, args, observation) }
-            val outcome = runCommand(command, question, langTag, now, recorder, actions)
-            if (outcome != null) {
-                tools.logAppend("command", "agent", "command:${command.kind}", question.take(300))
-                return AgentOutcome(outcome.copy(trace = steps.map { "${it.index}. ${it.tool} → ${it.observation.take(160)}" }, actions = actions), steps, actions)
+            when (command.kind) {
+                CommandKind.RESEARCH -> return researchAnswer(
+                    target = command.payload.ifBlank { question },
+                    langTag = langTag,
+                    pack = pack,
+                    known = tools.knowledgeAnswerable(question, 5),
+                    budget = ResearchBudget.DEEP,
+                    reason = "دستور تحقیق صریح",
+                    steps = steps,
+                    actions = actions,
+                    phraser = phraser,
+                    step = recorder
+                )
+                CommandKind.REFRESH -> return refreshAnswer(
+                    question = question, langTag = langTag, pack = pack,
+                    steps = steps, actions = actions, phraser = phraser, step = recorder
+                )
+                else -> {
+                    val outcome = runCommand(command, question, langTag, now, recorder, actions)
+                    tools.logAppend("command", "agent", "command:${command.kind}", question.take(300))
+                    return AgentOutcome(
+                        outcome.copy(
+                            trace = steps.map { "${it.index}. ${it.tool} → ${it.observation.take(160)}" },
+                            actions = actions
+                        ),
+                        steps, actions
+                    )
+                }
             }
         }
 
-        // ---- 2. local catalog first: cheap, exact, no network ----
-        val localAnswer = qa.ask(question, tools.catalog(), now)
-        step("پرسش از داده‌های محلی (کاتالوگ بازار)", "catalog.ask", emptyMap(),
-            if (localAnswer.refused) "پاسخ محلی ممکن نبود" else "پاسخ محلی با اطمینان ${pct(localAnswer.confidence)}")
+        // ---- 2. the ads/listings catalog: free, exact, offline ----
+        val localAnswer = qa.ask(question, catalog, now)
+        step(
+            "پرسش از آگهی‌های ثبت‌شده (کاتالوگ محلی)", "catalog.ask", emptyMap(),
+            if (localAnswer.refused) "پاسخ محلی ممکن نبود" else "پاسخ محلی با اطمینان ${pct(localAnswer.confidence)}"
+        )
         if (!localAnswer.refused && localAnswer.confidence >= 0.6) {
             tools.logAppend("answer", "agent", "local-answer", question.take(300))
-            return finish(localAnswer.copy(trace = steps.map { it.tool }), steps, actions)
+            return AgentOutcome(
+                localAnswer.copy(
+                    trace = steps.map { it.tool },
+                    bullets = localAnswer.bullets + note(if (langTag == "en") "source: your stored listings" else "منبع: آگهی‌های ثبت‌شدهٔ خودت", langTag)
+                ),
+                steps, actions
+            )
         }
 
         // ---- 3. memory: durable user knowledge ----
@@ -108,109 +173,323 @@ class Agent(
                 refused = false,
                 lang = langTag
             )
-            return finish(phraser.render(Critic.stripUnsupported(draft)).copy(trace = steps.map { it.tool }), steps, actions)
+            return AgentOutcome(phraser.render(Critic.stripUnsupported(draft)).copy(trace = steps.map { it.tool }), steps, actions)
         }
 
-        // ---- 4. web research ----
         if (!allowWeb) {
-            val draft = refusedDraft("web.disabled", langTag, listOf(if (langTag == "en") "web search is off" else "جستجوی وب خاموش است"))
-            return finish(phraser.render(draft).copy(trace = steps.map { it.tool }), steps, actions)
-        }
-
-        val query = buildQuery(question, pack)
-        var report = tools.webSearch(query, langTag)
-        step("جستجوی وب چند-موتوره", "web.search", mapOf("q" to query),
-            "نتیجه: ${report.hits.size} از ${report.perEngine.size} موتور؛ خطا: ${report.failures.size}")
-        if (report.hits.size < 3) {
-            val retryQuery = buildQuery(question, pack, widen = true)
-            if (retryQuery != query) {
-                report = tools.webSearch(retryQuery, langTag)
-                step("بازنویسی پرسش و جستجوی دوباره (بازتاب)", "web.search", mapOf("q" to retryQuery),
-                    "نتیجهٔ دور دوم: ${report.hits.size}")
-            }
-        }
-        if (report.isEmpty) {
-            val reasons = report.failures.entries.take(3).joinToString("؛ ") { "${it.key}: ${it.value}" }
-            tools.logAppend("refusal", "agent", "no-web-results", "$query | $reasons")
             val draft = refusedDraft(
-                "web.empty", langTag,
-                listOf(
-                    if (langTag == "en") "no engine returned a usable result" else "هیچ موتوری نتیجهٔ قابل استفاده نداد",
-                    if (reasons.isNotBlank()) (if (langTag == "en") "engine errors: $reasons" else "خطای موتورها: $reasons") else ""
-                ).filter { it.isNotBlank() }
+                "web.disabled", langTag,
+                listOf(if (langTag == "en") "web search is off" else "جستجوی وب خاموش است")
             )
-            return finish(phraser.render(draft).copy(trace = steps.map { it.tool }), steps, actions)
+            return AgentOutcome(phraser.render(draft).copy(trace = steps.map { it.tool }), steps, actions)
         }
 
-        val pages = mutableListOf<ExtractedPage>()
-        for (hit in report.hits.take(maxPages)) {
-            val page = tools.fetchPage(hit.url, langTag)
-            when {
-                page == null -> step("واکشی صفحه", "web.fetch", mapOf("url" to hit.url), "ناموفق یا خالی")
-                page.signals.isNotEmpty() -> step(
-                    "واکشی صفحه", "web.fetch", mapOf("url" to hit.url),
-                    "کنار گذاشته شد: نشانهٔ تزریق دستور (${page.signals.joinToString(",")})"
-                )
-                page.text.length < 200 -> step("واکشی صفحه", "web.fetch", mapOf("url" to hit.url), "متن کافی نداشت (${page.text.length} نویسه)")
-                else -> {
-                    pages.add(page)
-                    step("واکشی صفحه", "web.fetch", mapOf("url" to hit.url), "خوب: ${page.text.length} نویسه")
+        // ---- 4. knowledge already acquired by the assistant ----
+        val known = tools.knowledgeAnswerable(question, 5)
+        val stale = known.filter { KnowledgeBank.isStale(it, now) }
+        val coverage = KnowledgeBank.coverage(question, known, now, pack)
+        step(
+            "بررسی دانش ذخیره‌شده", "knowledge.lookup",
+            mapOf("topic" to KnowledgeBank.topicKey(question)),
+            "موجود=${known.size} کهنه=${stale.size} پوشش=${pct(coverage)}"
+        )
+        if (known.isNotEmpty() && stale.isEmpty() && coverage >= directAnswerCoverage) {
+            return knowledgeAnswer(question, known, langTag, steps, actions, phraser)
+        }
+
+        // ---- 5. autonomous research: keep searching until the evidence is enough ----
+        return researchAnswer(
+            target = question,
+            langTag = langTag,
+            pack = pack,
+            known = known,
+            budget = tools.researchBudget(),
+            reason = if (known.isEmpty()) "دانشی ذخیره نشده بود" else "دانش موجود کهنه یا ناکافی بود (پوشش ${pct(coverage)})",
+            steps = steps,
+            actions = actions,
+            phraser = phraser,
+            step = recorder
+        )
+    }
+
+    // ---------- research ----------
+
+    /**
+     * Runs the loop, stores what it learned (categorised, de-duplicated, contradictions corrected),
+     * optionally fills the ads table from real pages, then answers from the evidence.
+     */
+    private fun researchAnswer(
+        target: String,
+        langTag: String,
+        pack: MarketPack,
+        known: List<KnowledgeItem>,
+        budget: ResearchBudget,
+        reason: String,
+        steps: MutableList<AgentStep>,
+        actions: MutableList<String>,
+        phraser: Phraser,
+        step: (String, String, Map<String, String>, String) -> Unit
+    ): AgentOutcome {
+        step(
+            "آغاز پژوهش خودکار", "research.start",
+            mapOf("reason" to reason, "maxRounds" to budget.maxRounds.toString()),
+            "بودجه: ${budget.maxRounds} دور، حداکثر ${budget.maxPages} صفحه، هدف پوشش ${pct(budget.targetCoverage)}"
+        )
+        val researcher = DeepResearcher(
+            search = { query, lang -> tools.webSearch(query, lang) },
+            fetch = { url, lang -> tools.fetchPage(url, lang) },
+            budget = budget,
+            now = { tools.now() }
+        )
+        val outcome = researcher.research(target, langTag, pack, known)
+
+        for (round in outcome.rounds) {
+            step(
+                "دور ${round.index}: ${round.note}", "web.search", mapOf("q" to round.query),
+                "hits=${round.hits} fetched=${round.fetched} evidence=${round.evidence} coverage=${pct(round.coverage)}"
+            )
+        }
+        for (page in outcome.pages) {
+            step("واکشی صفحه (شاهد پذیرفته شد)", "web.fetch", mapOf("url" to page.url), "متن: ${page.text.length} نویسه")
+        }
+        for ((url, why) in outcome.skipped) {
+            step("صفحهٔ کنارگذاشته‌شده", "web.fetch", mapOf("url" to url), why)
+        }
+
+        // ---- save what was learned: categorized, de-duplicated, contradictions resolved ----
+        val learned = mutableListOf<String>()
+        for (draft in outcome.drafts) {
+            val result = tools.knowledgeStore(draft)
+            when (result.decision) {
+                KnowledgeDecision.NEW -> {
+                    learned.add(
+                        if (langTag == "en") "new ${draft.category} fact from ${draft.domain}"
+                        else "دانش تازه در «${draft.category}» از ${draft.domain}"
+                    )
+                    actions.add("knowledge.new:${result.id}")
                 }
+                KnowledgeDecision.CORRECT -> {
+                    learned.add(
+                        if (langTag == "en") "corrected a value using ${draft.domain}"
+                        else "مقدار قبلی با دادهٔ ${draft.domain} اصلاح شد"
+                    )
+                    actions.add("knowledge.correct:${result.id}")
+                }
+                KnowledgeDecision.REFRESH -> {
+                    learned.add(if (langTag == "en") "re-verified via ${draft.domain}" else "بازبینی از ${draft.domain}")
+                    actions.add("knowledge.refresh:${result.id}")
+                }
+                KnowledgeDecision.CONFLICT -> {
+                    learned.add(
+                        if (langTag == "en") "conflict recorded (${draft.domain})"
+                        else "تناقض منابع ثبت شد (${draft.domain})"
+                    )
+                    actions.add("knowledge.conflict:${result.id}")
+                }
+                KnowledgeDecision.IGNORE -> Unit
             }
         }
+        if (outcome.drafts.isNotEmpty()) {
+            step(
+                "دسته‌بندی و ذخیرهٔ آنچه آموختم", "knowledge.store",
+                mapOf("items" to outcome.drafts.size.toString()),
+                learned.joinToString("؛ ").take(400)
+            )
+        }
 
-        val evidence = Extractive.select(question, pages, maxEvidence)
-        step("استخراج شاهد و خلاصه‌سازی استخراجی", "extract", mapOf("pages" to pages.size.toString()),
-            "شاهد: ${evidence.size} جمله از ${pages.size} صفحه")
+        // ---- ads section: fill it from pages that state an explicit price ----
+        var harvested = 0
+        if (outcome.evidence.isNotEmpty() && pack.id != EMPTY_PACK_ID) {
+            val harvest = ListingHarvester.harvest(outcome.evidence, pack, tools.now())
+            if (harvest.listings.isNotEmpty()) {
+                harvested = tools.insertListings(harvest.listings)
+                if (harvested > 0) actions.add("listing.harvest:$harvested")
+            }
+            step(
+                "استخراج آگهی از صفحه‌های وب", "listing.harvest",
+                mapOf("candidates" to harvest.listings.size.toString()),
+                "افزوده: $harvested، رد‌شده (بدون قیمت روشن): ${harvest.skipped}"
+            )
+        }
 
-        val draft = if (evidence.isEmpty()) {
+        // ---- answer ----
+        val draftAnswer: AnswerDraft = if (outcome.evidence.isEmpty()) {
             refusedDraft(
-                "web.no-evidence", langTag,
-                listOf(if (langTag == "en") "pages had no sentence related to the question" else "صفحه‌ها جملهٔ مرتبط با پرسش نداشتند")
+                if (outcome.pages.isEmpty()) "web.empty" else "web.no-evidence",
+                langTag,
+                buildList {
+                    add(if (langTag == "en") "no usable evidence after ${outcome.rounds.size} round(s)" else "پس از ${Text.num(outcome.rounds.size.toLong())} دور جستجو شاهد قابل استفاده‌ای نبود")
+                    if (outcome.failures.isNotEmpty()) {
+                        add(
+                            (if (langTag == "en") "engine errors: " else "خطای موتورها: ") +
+                                outcome.failures.entries.take(3).joinToString("؛ ") { "${it.key}: ${it.value}" }
+                        )
+                    }
+                }
             )
         } else {
-            val citations = evidence.mapIndexed { i, item -> Citation("W${i + 1}", hostOf(item.page.url), item.page.url) }
+            val citations = outcome.evidence.mapIndexed { index, item ->
+                Citation("W${index + 1}", KnowledgeBank.draftHost(item.page.url), item.page.url)
+            }
             val headline = if (langTag == "en") {
-                "From ${pages.size} source(s): " + (evidence.first().sentence.take(120))
+                "After ${outcome.rounds.size} search round(s) from ${outcome.pages.size} source(s): " +
+                    outcome.evidence.first().sentence.take(120)
             } else {
-                "بر پایهٔ ${Text.num(pages.size.toLong())} منبع: " + evidence.first().sentence.take(120)
+                "پس از ${Text.num(outcome.rounds.size.toLong())} دور جستجو از ${Text.num(outcome.pages.size.toLong())} منبع: " +
+                    outcome.evidence.first().sentence.take(120)
             }
             AnswerDraft(
                 intent = "web.research",
                 headline = headline,
-                facts = evidence.mapIndexed { i, item -> Fact("W${i + 1}", item.sentence.take(280)) },
+                facts = outcome.evidence.mapIndexed { index, item -> Fact("W${index + 1}", item.sentence.take(280)) },
                 citations = citations,
                 missing = emptyList(),
-                confidence = confidenceOf(evidence, report, langTag),
+                confidence = confidenceOf(outcome),
                 refused = false,
                 lang = langTag
             )
         }
 
-        val verified = Critic.stripUnsupported(draft)
-        var answer = phraser.render(verified)
-        if (report.failures.isNotEmpty() && !answer.refused) {
+        var answer = phraser.render(Critic.stripUnsupported(draftAnswer))
+        if (!answer.refused) {
             answer = answer.copy(
-                bullets = answer.bullets + (
-                    if (langTag == "en") "Unreachable engines: ${report.failures.keys.joinToString(", ")}"
-                    else "موتورهای در دسترس‌نبوده: ${report.failures.keys.joinToString("، ")}"
-                    )
+                bullets = answer.bullets +
+                    stopNote(outcome, langTag) +
+                    note(
+                        if (langTag == "en") "stored ${outcome.drafts.size} knowledge item(s), +$harvested listing(s)"
+                        else "${Text.num(outcome.drafts.size.toLong())} دانسته ذخیره شد، ${Text.num(harvested.toLong())} آگهی افزوده شد",
+                        langTag
+                    ),
+                learned = learned.take(6)
             )
+        } else if (steps.isNotEmpty()) {
+            answer = answer.copy(learned = emptyList())
         }
         answer = answer.copy(trace = steps.map { "${it.index}. ${it.tool}" }, actions = actions)
 
-        // ---- 5. active learning: keep what is durable, log what happened ----
-        val learnable = MemoryBank.learnableFrom(question, answer, pack)
-        for ((kind, text) in learnable) {
-            val written = tools.memoryWrite(kind, text, "agent")
-            actions.add("memory.write:${written.id}")
-            step("یادگیری از این گفتگو", "memory.write", mapOf("kind" to kind), written.category)
-        }
-        tools.logAppend("answer", "agent", "web-answer", "q=$query | sources=${pages.size} | conf=${pct(answer.confidence)}")
-        return AgentOutcome(answer, steps, actions, pages)
+        tools.logAppend(
+            "answer", "agent", if (answer.refused) "research-refused" else "research-answer",
+            "q=${target.take(120)} | rounds=${outcome.rounds.size} pages=${outcome.pages.size} " +
+                "coverage=${pct(outcome.coverage)} stop=${outcome.stop} learned=${outcome.drafts.size}"
+        )
+        return AgentOutcome(answer, steps, actions, outcome.pages)
     }
 
-    // ---------- commands ----------
+    /** Answers from knowledge the assistant already owns — no network, but shows the source and age. */
+    private fun knowledgeAnswer(
+        question: String,
+        items: List<KnowledgeItem>,
+        langTag: String,
+        steps: MutableList<AgentStep>,
+        actions: MutableList<String>,
+        phraser: Phraser
+    ): AgentOutcome {
+        val newest = items.maxOfOrNull { it.lastVerifiedAt } ?: tools.now()
+        val draft = AnswerDraft(
+            intent = "knowledge.answer",
+            headline = if (langTag == "en") {
+                "From my knowledge base (verified ${Jalali.format(newest)}):"
+            } else {
+                "از دانش ذخیره‌شده (آخرین بازبینی ${Jalali.format(newest)}):"
+            },
+            facts = items.mapIndexed { index, item -> Fact("K${index + 1}", item.claim.take(280)) },
+            citations = items.mapIndexed { index, item -> Citation("K${index + 1}", item.domain.ifBlank { "دانش" }, item.url) },
+            missing = emptyList(),
+            confidence = items.map { it.confidence }.average().coerceIn(0.45, 0.8),
+            refused = false,
+            lang = langTag
+        )
+        val rendered = phraser.render(Critic.stripUnsupported(draft))
+        val answer = rendered.copy(
+            trace = steps.map { it.tool },
+            bullets = rendered.bullets +
+                note(if (langTag == "en") "${items.size} stored item(s), no search needed" else "${Text.num(items.size.toLong())} دانسته، بدون جستجوی تازه", langTag)
+        )
+        steps.add(
+            AgentStep(
+                steps.size + 1, "پاسخ از دانش ذخیره‌شده (بدون جستجوی تازه)", "knowledge.answer",
+                mapOf("items" to items.size.toString()),
+                "کهنه نیست؛ بازبینی اخیر: ${Jalali.format(newest)}"
+            )
+        )
+        tools.logAppend("answer", "agent", "knowledge-answer", question.take(200))
+        return AgentOutcome(answer, steps, actions)
+    }
+
+    /** "بروزرسانی کن": re-research what went stale, correct it, report what changed. */
+    private fun refreshAnswer(
+        question: String,
+        langTag: String,
+        pack: MarketPack,
+        steps: MutableList<AgentStep>,
+        actions: MutableList<String>,
+        phraser: Phraser,
+        step: (String, String, Map<String, String>, String) -> Unit
+    ): AgentOutcome {
+        val stale = tools.knowledgeStale(4)
+        step("شناسایی دانش کهنه", "knowledge.stale", emptyMap(), "کهنه: ${stale.size}")
+        if (stale.isEmpty()) {
+            val answer = Answer(
+                intent = "knowledge.refresh",
+                text = if (langTag == "en") "Nothing is stale — no refresh needed." else "چیزی کهنه نیست؛ بروزرسانی لازم نداشتم.",
+                confidence = 1.0,
+                lang = langTag
+            )
+            return AgentOutcome(answer, steps, actions)
+        }
+        var refreshed = 0
+        var corrected = 0
+        val bullets = mutableListOf<String>()
+        for (item in stale) {
+            val outcome = DeepResearcher(
+                search = { query, lang -> tools.webSearch(query, lang) },
+                fetch = { url, lang -> tools.fetchPage(url, lang) },
+                budget = tools.researchBudget(),
+                now = { tools.now() }
+                // The stale item must NOT count as "known": we are here to replace it.
+            ).research(item.question.ifBlank { item.topic }, langTag, pack, known = emptyList())
+            for (draft in outcome.drafts) {
+                when (tools.knowledgeStore(draft).decision) {
+                    KnowledgeDecision.CORRECT -> {
+                        corrected++
+                        bullets.add(
+                            if (langTag == "en") "corrected: ${draft.claim.take(120)}"
+                            else "اصلاح شد: ${draft.claim.take(120)}"
+                        )
+                        actions.add("knowledge.correct:${draft.id}")
+                    }
+                    KnowledgeDecision.NEW, KnowledgeDecision.REFRESH, KnowledgeDecision.CONFLICT -> {
+                        refreshed++
+                        actions.add("knowledge.refresh:${draft.id}")
+                    }
+                    KnowledgeDecision.IGNORE -> Unit
+                }
+            }
+            step(
+                "بروزرسانی «${item.topic.take(40)}»", "research.refresh",
+                mapOf("rounds" to outcome.rounds.size.toString()),
+                "شاهد=${outcome.evidence.size} توقف=${outcome.stop}"
+            )
+        }
+        val text = if (langTag == "en") {
+            "Refreshed ${refreshed + corrected} item(s); $corrected value(s) were corrected by fresher sources."
+        } else {
+            "${Text.num((refreshed + corrected).toLong())} مورد بروزرسانی شد؛ ${Text.num(corrected.toLong())} مقدار با منبع تازه‌تر اصلاح شد."
+        }
+        val answer = Answer(
+            intent = "knowledge.refresh",
+            text = text,
+            bullets = bullets.take(6),
+            confidence = 0.8,
+            lang = langTag,
+            trace = steps.map { it.tool },
+            actions = actions
+        )
+        tools.logAppend("answer", "agent", "knowledge-refresh", "stale=${stale.size} corrected=$corrected")
+        return AgentOutcome(answer, steps, actions)
+    }
+
+    // ---------- commands that only touch app data ----------
 
     private fun runCommand(
         command: Command,
@@ -219,15 +498,14 @@ class Agent(
         now: Long,
         step: (String, String, Map<String, String>, String) -> Unit,
         actions: MutableList<String>
-    ): Answer? {
+    ): Answer {
         val pack = tools.catalog().pack
         return when (command.kind) {
             CommandKind.SAVE -> {
                 val payload = command.payload.ifBlank { question }
-                val category = MemoryBank.classify(payload, pack)
                 val written = tools.memoryWrite(command.memoryKind, payload, "user")
                 actions.add("memory.write:${written.id}")
-                step("ذخیرهٔ یادسپاری", "memory.write", mapOf("category" to category), "id=${written.id}")
+                step("ذخیرهٔ یادسپاری", "memory.write", mapOf("category" to written.category), "id=${written.id}")
                 Answer(
                     intent = "memory.write",
                     text = if (langTag == "en") "Saved to memory (${written.category})." else "در حافظه ثبت شد (دستهٔ ${written.category}).",
@@ -267,7 +545,7 @@ class Agent(
                 Answer(
                     intent = "backup.write",
                     text = if (langTag == "en") "Backup written: $path" else "بک‌آپ ساخته شد: $path",
-                    bullets = listOf(if (langTag == "en") "Includes packs, listings, memory, log and settings." else "شامل پک‌ها، آگهی‌ها، حافظه، لاگ و تنظیمات."),
+                    bullets = listOf(if (langTag == "en") "Includes packs, listings, memory, knowledge, log and settings." else "شامل پک‌ها، آگهی‌ها، حافظه، دانش، لاگ و تنظیمات."),
                     confidence = 1.0,
                     lang = langTag
                 )
@@ -289,8 +567,11 @@ class Agent(
                 val all = tools.memoryAll(400)
                 val consolidated = MemoryBank.consolidate(all)
                 actions.addAll(consolidated.droppedIds.map { "memory.merge:$it" })
-                step("بازخوانی و یکپارچه‌سازی حافظه", "memory.consolidate", mapOf("n" to all.size.toString()),
-                    "یکتا: ${consolidated.kept.size}، ادغام: ${consolidated.merged.size}")
+                step(
+                    "بازخوانی و یکپارچه‌سازی حافظه", "memory.consolidate",
+                    mapOf("n" to all.size.toString()),
+                    "یکتا: ${consolidated.kept.size}، ادغام: ${consolidated.merged.size}"
+                )
                 Answer(
                     intent = "memory.list",
                     text = MemoryBank.summary(consolidated.kept, if (langTag == "en") Lang.EN else Lang.FA),
@@ -300,8 +581,32 @@ class Agent(
                     lang = langTag
                 )
             }
+            CommandKind.KNOWLEDGE -> {
+                val items = tools.knowledgeAll(400)
+                val stale = KnowledgeBank.staleItems(items, now)
+                step(
+                    "گزارش دانش", "knowledge.report",
+                    mapOf("n" to items.size.toString()), "کهنه: ${stale.size}"
+                )
+                Answer(
+                    intent = "knowledge.list",
+                    text = KnowledgeBank.summary(items, now, if (langTag == "en") Lang.EN else Lang.FA),
+                    bullets = items.filter { it.fresh }.sortedByDescending { it.lastVerifiedAt }.take(8)
+                        .map { "${it.category} • ${it.domain} • ${Jalali.format(it.lastVerifiedAt)}: ${it.claim.take(120)}" },
+                    citations = items.filter { it.fresh }.take(8).mapIndexed { index, item ->
+                        Citation("K${index + 1}", item.domain.ifBlank { "دانش" }, item.url)
+                    },
+                    confidence = 1.0,
+                    lang = langTag
+                )
+            }
+            CommandKind.RESEARCH, CommandKind.REFRESH -> Answer(
+                intent = "noop", text = "", confidence = 0.0, lang = langTag
+            )
         }
     }
+
+    // ---------- helpers ----------
 
     private fun needsFreshData(question: String): Boolean {
         val q = Text.normalize(question)
@@ -309,22 +614,34 @@ class Agent(
             .any { q.contains(Text.normalize(it)) }
     }
 
-    private fun buildQuery(question: String, pack: MarketPack, widen: Boolean = false): String {
-        val base = Text.normalize(question).trim()
-        val tokens = Text.contentTokens(base)
-        val extras = Lexicon.expand(tokens) - tokens.toSet()
-        val packTerms = Lexicon.packTerms(pack.attributes.take(3).map { it.label })
-        val add = if (widen) (extras.take(4) + packTerms.take(2)) else emptyList()
-        return if (add.isEmpty()) base else (base + " " + add.distinct().joinToString(" ")).trim()
+    private fun confidenceOf(outcome: ResearchOutcome): Double {
+        if (outcome.evidence.isEmpty()) return 0.0
+        val hosts = outcome.evidence.map { KnowledgeBank.draftHost(it.page.url) }.distinct().size
+        val relevance = outcome.evidence.map { it.score }.average().coerceIn(0.0, 1.0)
+        val base = 0.24 + 0.10 * hosts.coerceAtMost(4) + 0.26 * relevance + 0.20 * outcome.coverage
+        return base.coerceIn(0.1, 0.88)
     }
 
-    private fun confidenceOf(evidence: List<Evidence>, report: SearchReport, langTag: String): Double {
-        if (evidence.isEmpty()) return 0.0
-        val hosts = evidence.map { hostOf(it.page.url) }.distinct().size
-        val base = 0.28 + 0.10 * hosts.coerceAtMost(4) + 0.28 * evidence.map { it.score }.average().coerceIn(0.0, 1.0)
-        val diversity = if (report.perEngine.size >= 2) 0.06 else 0.0
-        return (base + diversity).coerceIn(0.1, 0.85)
+    private fun stopNote(outcome: ResearchOutcome, langTag: String): List<String> = when (outcome.stop) {
+        ResearchStop.SUFFICIENT -> listOf(
+            if (langTag == "en") "Evidence was sufficient — stopped searching."
+            else "شواهد کافی شد و جستجو را متوقف کردم."
+        )
+        ResearchStop.NO_NEW_EVIDENCE -> listOf(
+            if (langTag == "en") "No meaningful new page was found; stopped instead of repeating."
+            else "صفحهٔ تازهٔ معناداری نبود؛ به‌جای تکرار، متوقف شدم."
+        )
+        ResearchStop.ROUNDS, ResearchStop.PAGES, ResearchStop.TIME -> listOf(
+            if (langTag == "en") "Search budget reached — this answer may be incomplete. Say «بروزرسانی کن» to go deeper."
+            else "سقف بودجهٔ جستجو پر شد؛ ممکن است پاسخ کامل نباشد. بگو «بروزرسانی کن» تا عمیق‌تر بگردم."
+        )
+        ResearchStop.NO_RESULTS -> listOf(
+            if (langTag == "en") "No engine returned anything usable."
+            else "هیچ موتوری نتیجهٔ قابل استفاده نداد."
+        )
     }
+
+    private fun note(text: String, langTag: String): List<String> = listOf(if (langTag == "en") "— $text" else "— $text")
 
     private fun refusedDraft(intent: String, langTag: String, missing: List<String>): AnswerDraft = AnswerDraft(
         intent = intent,
@@ -337,24 +654,22 @@ class Agent(
         lang = langTag
     )
 
-    private fun finish(answer: Answer, steps: List<AgentStep>, actions: List<String>): AgentOutcome =
-        AgentOutcome(answer, steps, actions)
-
     private fun pct(value: Double): String = "${(value * 100).toInt()}%"
 
-    private fun hostOf(url: String): String =
-        runCatching { java.net.URI(url).host?.removePrefix("www.") ?: url }.getOrDefault(url).take(60)
+    companion object {
+        const val EMPTY_PACK_ID = "__none__"
+    }
 }
 
 // ---------- commands ----------
 
-enum class CommandKind { SAVE, FORGET, BACKUP, LOG, RECALL }
+enum class CommandKind { SAVE, FORGET, BACKUP, LOG, RECALL, KNOWLEDGE, RESEARCH, REFRESH }
 
 data class Command(val kind: CommandKind, val payload: String, val memoryKind: String = "note")
 
 /**
- * Small, explicit command grammar. Anything that is not clearly a command falls through to
- * the research path, so a user sentence is never silently treated as a database mutation.
+ * Small, explicit command grammar. Anything that is not clearly a command falls through to the
+ * research path, so a normal sentence is never silently turned into a database mutation.
  */
 object CommandParser {
 
@@ -366,8 +681,14 @@ object CommandParser {
         "(?i)^\\s*(?:اینو\\s+)?(?:فراموش\\s*کن|پاک\\s*کن|حذف\\s*کن|forget|delete)\\s*[:：]?\\s*(.*)$",
         RegexOption.DOT_MATCHES_ALL
     )
+    private val research = Regex(
+        "(?i)^\\s*(تحقیق\\s*کن|جستجو\\s*کن|بگرد|پیدا\\s*کن|بررسی\\s*کن|research|look\\s*up|search)\\s*(?:دربارهٔ|درباره|برای|about|for)?\\s*[:：]?\\s*(.*)$",
+        RegexOption.DOT_MATCHES_ALL
+    )
+    private val refresh = Regex("(?i)(بروز\\s*رسانی|به\\s*روز\\s*کن|به‌روز\\s*کن|تازه\\s*سازی|refresh|update)")
     private val backup = Regex("(?i)(بک\\s*آپ|بکاپ|پشتیبان\\s*گیری|نسخهٔ\\s*پشتیبان|backup)")
     private val log = Regex("(?i)(لاگ|گزارش\\s*فعالیت|log|history\\s*of\\s*actions)")
+    private val knowledge = Regex("(?i)(دانش|دانسته‌ها|چه\\s*چیزهایی\\s*یاد\\s*گرفتی|چی\\s*یاد\\s*گرفتی|knowledge|what\\s+have\\s+you\\s+learned)")
     private val recall = Regex(
         "(?i)((چه|چیا)\\s*(چیز\\S*)?\\s*(یادت|در\\s*حافظه)|حافظه\\s*(را|رو)?\\s*(نشان|نشون|بگو|لیست|خالی)|^حافظه$|" +
             "what\\s+do\\s+you\\s+remember|show\\s+memory|list\\s+memory)"
@@ -376,12 +697,12 @@ object CommandParser {
     fun parse(question: String): Command? {
         val original = question.trim()
         if (original.isEmpty()) return null
-        // ZWNJ is meaningful in Persian text but must not break command detection, so every
-        // match runs on a same-length probe (ZWNJ -> space) and the payload is cut from the
-        // original string with the matched range.
+        // ZWNJ is meaningful in Persian but must not break command detection: match on a
+        // same-length probe, then cut the payload from the original string.
         val text = original.replace('\u200c', ' ')
-        save.find(text)?.let { m ->
-            val payload = m.groups[1]?.let { original.substring(it.range) }.orEmpty().trim()
+
+        save.find(text)?.let { match ->
+            val payload = match.groups[1]?.let { original.substring(it.range) }.orEmpty().trim()
             if (payload.isNotEmpty()) {
                 val kind = when {
                     payload.contains("ترجیح") || payload.contains("prefer") -> "preference"
@@ -392,13 +713,19 @@ object CommandParser {
                 return Command(CommandKind.SAVE, payload, kind)
             }
         }
-        forget.find(text)?.let { m ->
-            val payload = m.groups[1]?.let { original.substring(it.range) }.orEmpty().trim()
+        forget.find(text)?.let { match ->
+            val payload = match.groups[1]?.let { original.substring(it.range) }.orEmpty().trim()
             if (payload.isNotEmpty()) return Command(CommandKind.FORGET, payload)
         }
-        if (backup.containsMatchIn(text) && text.length <= 60) return Command(CommandKind.BACKUP, text)
-        if (log.containsMatchIn(text) && text.length <= 40) return Command(CommandKind.LOG, text)
-        if (recall.containsMatchIn(text) && text.length <= 40) return Command(CommandKind.RECALL, text)
+        research.find(text)?.let { match ->
+            val payload = match.groups[2]?.let { original.substring(it.range) }.orEmpty().trim()
+            if (payload.isNotEmpty()) return Command(CommandKind.RESEARCH, payload)
+        }
+        if (refresh.containsMatchIn(text) && text.length <= 40) return Command(CommandKind.REFRESH, original)
+        if (backup.containsMatchIn(text) && text.length <= 60) return Command(CommandKind.BACKUP, original)
+        if (log.containsMatchIn(text) && text.length <= 40) return Command(CommandKind.LOG, original)
+        if (knowledge.containsMatchIn(text) && text.length <= 60) return Command(CommandKind.KNOWLEDGE, original)
+        if (recall.containsMatchIn(text) && text.length <= 40) return Command(CommandKind.RECALL, original)
         return null
     }
 }
@@ -429,15 +756,20 @@ object Extractive {
             val overlap = Similarity.containment(queryTokens, tokens.toSet())
             val positionBonus = if (index < 40) 0.05 else 0.0
             val lengthPenalty = if (sentence.length > 260) 0.05 else 0.0
-            val score = overlap + positionBonus - lengthPenalty
-            Evidence(sentence, page, score) to index
+            Evidence(sentence, page, overlap + positionBonus - lengthPenalty) to index
         }.sortedWith(compareByDescending<Pair<Evidence, Int>> { it.first.score }.thenBy { it.second })
 
         val picked = mutableListOf<Evidence>()
         for ((evidence, _) in scored) {
             if (picked.size >= limit) break
             if (evidence.score < 0.08) continue
-            if (picked.any { Similarity.hamming(Similarity.simhash(Text.contentTokens(it.sentence)), Similarity.simhash(Text.contentTokens(evidence.sentence))) < 12 }) continue
+            if (picked.any {
+                    Similarity.hamming(
+                        Similarity.simhash(Text.contentTokens(it.sentence)),
+                        Similarity.simhash(Text.contentTokens(evidence.sentence))
+                    ) < 12
+                }
+            ) continue
             picked.add(evidence)
         }
         if (picked.isEmpty() && scored.isNotEmpty()) picked.add(scored.first().first)

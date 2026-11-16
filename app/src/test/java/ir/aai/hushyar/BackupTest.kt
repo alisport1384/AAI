@@ -4,6 +4,7 @@ import ir.aai.hushyar.core.Text
 import ir.aai.hushyar.domain.AuditEntry
 import ir.aai.hushyar.domain.Backup
 import ir.aai.hushyar.domain.Interview
+import ir.aai.hushyar.domain.KnowledgeItem
 import ir.aai.hushyar.domain.Listing
 import ir.aai.hushyar.domain.LogEvent
 import ir.aai.hushyar.domain.Markdown
@@ -127,6 +128,46 @@ class BackupTest {
         } catch (expected: Backup.BackupException) {
             assertTrue(expected.message!!.isNotBlank())
         }
+    }
+
+    @Test
+    fun v2BackupsRemainRestorable() {
+        val legacy = Backup.encode(Backup.Snapshot(listings = listOf(listing()), memory = listOf(memory())), "0.2.0", 5_000L, schema = "hushyar.backup/2")
+        val info = Backup.inspect(legacy)
+        assertEquals("hushyar.backup/2", info.schema)
+        val restored = Backup.decode(legacy)
+        assertEquals(1, restored.listings.size)
+        assertTrue(restored.knowledge.isEmpty())
+    }
+
+    @Test
+    fun knowledgeSurvivesTheRoundTrip() {
+        val knowledge = KnowledgeItem(
+            id = "k1",
+            topic = "قیمت-گوشی",
+            question = "قیمت گوشی چقدر است؟",
+            claim = "قیمت گوشی ۵۰ میلیون تومان است",
+            category = MemoryBank.CAT_FACT,
+            numericValue = 50_000_000.0,
+            unit = "تومان",
+            url = "https://example.com/x",
+            domain = "example.com",
+            confidence = 0.7,
+            createdAt = 30_000L,
+            lastVerifiedAt = 31_000L,
+            sourceCount = 2,
+            supersededById = "k2",
+            tags = listOf("قیمت")
+        )
+        val json = Backup.encode(snapshot().copy(knowledge = listOf(knowledge)), "0.3.0", 40_000L)
+        assertEquals(1, Backup.inspect(json).counts["knowledge"])
+        val restored = Backup.decode(json).knowledge.single()
+        assertEquals("k1", restored.id)
+        assertEquals(50_000_000.0, restored.numericValue!!, 1.0)
+        assertEquals("تومان", restored.unit)
+        assertEquals("k2", restored.supersededById)
+        assertEquals(2, restored.sourceCount)
+        assertFalse(restored.fresh)
     }
 
     @Test

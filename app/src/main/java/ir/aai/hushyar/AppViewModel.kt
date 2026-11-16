@@ -28,6 +28,8 @@ import ir.aai.hushyar.domain.MarketPack
 import ir.aai.hushyar.domain.Markdown
 import ir.aai.hushyar.domain.MemoryBank
 import ir.aai.hushyar.domain.MemoryItem
+import ir.aai.hushyar.domain.KnowledgeBank
+import ir.aai.hushyar.domain.KnowledgeItem
 import ir.aai.hushyar.domain.LogEvent
 import ir.aai.hushyar.domain.PackBuildResult
 import ir.aai.hushyar.domain.PackCodec
@@ -82,6 +84,10 @@ class AppViewModel(
     var dataFiles by mutableStateOf<List<String>>(emptyList())
         private set
     var lastMarkdown by mutableStateOf<String?>(null)
+        private set
+    var knowledge by mutableStateOf<List<KnowledgeItem>>(emptyList())
+        private set
+    var researchDepth by mutableStateOf("balanced")
         private set
 
     private val qa = QaEngine()
@@ -279,13 +285,31 @@ class AppViewModel(
 
     private fun refreshSecondary() {
         io({
-            Triple(repos.memoryAll(300), repos.events(200), store.listBackups().map { it.name })
-        }) { (mem, evts, backups) ->
-            memories = mem
-            events = evts
-            backupFiles = backups
-            dataFiles = store.inventory()
-        }
+            Secondary(
+                memory = repos.memoryAll(300),
+                events = repos.events(200),
+                backups = store.listBackups().map { it.name },
+                knowledge = repos.knowledgeAll(300),
+                depth = repos.researchDepth()
+            )
+        }) { apply(it) }
+    }
+
+    private data class Secondary(
+        val memory: List<MemoryItem>,
+        val events: List<LogEvent>,
+        val backups: List<String>,
+        val knowledge: List<KnowledgeItem>,
+        val depth: String
+    )
+
+    private fun apply(snapshot: Secondary) {
+        memories = snapshot.memory
+        events = snapshot.events
+        backupFiles = snapshot.backups
+        knowledge = snapshot.knowledge
+        researchDepth = snapshot.depth
+        dataFiles = store.inventory()
     }
 
     fun refreshData() = refreshSecondary()
@@ -331,6 +355,42 @@ class AppViewModel(
 
     // ---------- memory, backup, logs ----------
 
+    // ---------- knowledge store ----------
+
+    fun deleteKnowledge(id: String) {
+        io({ repos.deleteKnowledge(id); Unit }) {
+            notice = "دانسته حذف شد."
+            refreshSecondary()
+        }
+    }
+
+    fun updateKnowledge(item: KnowledgeItem, claim: String, category: String) {
+        io({
+            repos.updateKnowledge(item.copy(claim = claim.trim().ifBlank { item.claim }, category = category))
+            repos.log("knowledge", "user", "ویرایش دستی دانسته", item.id)
+            Unit
+        }) {
+            notice = "دانسته ویرایش شد."
+            refreshSecondary()
+        }
+    }
+
+    fun chooseResearchDepth(name: String) {
+        io({ repos.setResearchDepth(name); Unit }) {
+            researchDepth = name
+            notice = when (name) {
+                "quick" -> "عمق پژوهش: سریع (۲ دور، تا ۴ صفحه)"
+                "deep" -> "عمق پژوهش: عمیق (۵ دور، تا ۱۴ صفحه)"
+                else -> "عمق پژوهش: متعادل (۳ دور، تا ۸ صفحه)"
+            }
+        }
+    }
+
+    /** Re-research everything that went stale ("تا زمانی که لازم است جستجو کن"). */
+    fun refreshKnowledge() = ask("بروزرسانی کن")
+
+    fun knowledgeSummary(): String = KnowledgeBank.summary(knowledge, System.currentTimeMillis())
+
     fun consolidateMemory() {
         io({
             val all = repos.memoryAll(2000)
@@ -361,7 +421,8 @@ class AppViewModel(
                 audits = repos.auditsAll(500),
                 packs = repos.packs(),
                 listingCount = repos.listings().size,
-                generatedAt = System.currentTimeMillis()
+                generatedAt = System.currentTimeMillis(),
+                knowledge = repos.knowledgeAll(2000)
             )
             val file = store.writeLog("hushyar-brain-${store.stamp()}", md)
             repos.log("log", "user", "خروجی دفتر هوش", file.name)

@@ -8,12 +8,16 @@ import ir.aai.hushyar.domain.AgentTools
 import ir.aai.hushyar.domain.Backup
 import ir.aai.hushyar.domain.Catalog
 import ir.aai.hushyar.domain.ExtractedPage
+import ir.aai.hushyar.domain.KnowledgeItem
+import ir.aai.hushyar.domain.KnowledgeResult
+import ir.aai.hushyar.domain.Listing
 import ir.aai.hushyar.domain.LogEvent
 import ir.aai.hushyar.domain.MarketPack
 import ir.aai.hushyar.domain.Markdown
 import ir.aai.hushyar.domain.MemoryBank
 import ir.aai.hushyar.domain.MemoryHit
 import ir.aai.hushyar.domain.MemoryItem
+import ir.aai.hushyar.domain.ResearchBudget
 import ir.aai.hushyar.domain.Resolver
 import ir.aai.hushyar.domain.SearchCore
 import ir.aai.hushyar.domain.SearchReport
@@ -86,6 +90,23 @@ class AndroidTools(
 
     override fun memoryTouch(ids: List<String>) = repos.touchMemory(ids)
 
+    // ---------- knowledge store ----------
+
+    override fun knowledgeAnswerable(question: String, limit: Int): List<KnowledgeItem> =
+        repos.knowledgeAnswerable(question, now(), limit)
+
+    override fun knowledgeAll(limit: Int): List<KnowledgeItem> = repos.knowledgeAll(limit)
+
+    override fun knowledgeStale(limit: Int): List<KnowledgeItem> = repos.knowledgeStale(now(), limit)
+
+    override fun knowledgeStore(item: KnowledgeItem): KnowledgeResult = repos.knowledgeUpsert(item)
+
+    override fun knowledgeDelete(id: String): Boolean = repos.deleteKnowledge(id)
+
+    override fun insertListings(listings: List<Listing>): Int = repos.insertListings(listings)
+
+    override fun researchBudget(): ResearchBudget = repos.researchBudget()
+
     override fun webSearch(query: String, langTag: String): SearchReport {
         val report = search.search(query, langTag)
         repos.log(
@@ -152,12 +173,13 @@ object BackupService {
             audits = snapshot.audits,
             packs = snapshot.packs.map { Triple(it.id, it.name, it.version) },
             listingCount = snapshot.listings.size,
-            generatedAt = now
+            generatedAt = now,
+            knowledge = snapshot.knowledge
         )
         val file = store.writeBundle(stamp, json, brain, logMd, memoryMd)
         repos.log(
             "backup", "user", "بک‌آپ کامل ساخته شد",
-            "${file.name} | پک=${snapshot.packs.size} آگهی=${snapshot.listings.size} حافظه=${snapshot.memory.size} | ${Jalali.format(now)}"
+            "${file.name} | پک=${snapshot.packs.size} آگهی=${snapshot.listings.size} حافظه=${snapshot.memory.size} دانش=${snapshot.knowledge.size} | ${Jalali.format(now)}"
         )
         repos.audit("user", "backup.create", file.name, "sha256=${info.sha256.take(16)}")
         return Result(file, info, brain)
@@ -172,7 +194,7 @@ object BackupService {
         repos.restore(snapshot)
         repos.log(
             "backup", "user", "بازیابی انجام شد",
-            "پک=${snapshot.packs.size} آگهی=${snapshot.listings.size} حافظه=${snapshot.memory.size} | نسخهٔ فایل=${info.appVersion}"
+            "پک=${snapshot.packs.size} آگهی=${snapshot.listings.size} حافظه=${snapshot.memory.size} دانش=${snapshot.knowledge.size} | نسخهٔ فایل=${info.appVersion}"
         )
         return info
     }

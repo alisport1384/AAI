@@ -12,13 +12,17 @@ import java.security.MessageDigest
  */
 object Backup {
 
-    const val SCHEMA: String = "hushyar.backup/2"
+    const val SCHEMA: String = "hushyar.backup/3"
+
+    /** Older snapshots stay restorable: v0.2 files simply carry no knowledge block. */
+    val ACCEPTED_SCHEMAS: Set<String> = setOf(SCHEMA, "hushyar.backup/2")
 
     data class Snapshot(
         val packs: List<MarketPack> = emptyList(),
         val activePackId: String? = null,
         val listings: List<Listing> = emptyList(),
         val memory: List<MemoryItem> = emptyList(),
+        val knowledge: List<KnowledgeItem> = emptyList(),
         val logs: List<LogEvent> = emptyList(),
         val audits: List<AuditEntry> = emptyList(),
         val answers: Map<String, String> = emptyMap(),
@@ -35,7 +39,11 @@ object Backup {
 
     class BackupException(message: String) : Exception(message)
 
-    fun encode(snapshot: Snapshot, appVersion: String, createdAt: Long): String {
+    /**
+     * @param schema defaults to the current schema; the parameter exists so compatibility with
+     * older envelopes can be exercised in tests instead of being asserted in comments.
+     */
+    fun encode(snapshot: Snapshot, appVersion: String, createdAt: Long, schema: String = SCHEMA): String {
         val data = MiniJson.obj(
             "packs" to MiniJson.arr(snapshot.packs.map { pack ->
                 MiniJson.obj(
@@ -75,6 +83,27 @@ object Backup {
                     "createdAt" to MiniJson.num(item.createdAt)
                 )
             }),
+            "knowledge" to MiniJson.arr(snapshot.knowledge.map { item ->
+                MiniJson.obj(
+                    "id" to MiniJson.str(item.id),
+                    "topic" to MiniJson.str(item.topic),
+                    "question" to MiniJson.str(item.question),
+                    "claim" to MiniJson.str(item.claim),
+                    "category" to MiniJson.str(item.category),
+                    "attribute" to MiniJson.str(item.attribute ?: ""),
+                    "numericValue" to MiniJson.numOrNull(item.numericValue),
+                    "unit" to MiniJson.str(item.unit ?: ""),
+                    "url" to MiniJson.str(item.url),
+                    "domain" to MiniJson.str(item.domain),
+                    "confidence" to MiniJson.num(item.confidence),
+                    "createdAt" to MiniJson.num(item.createdAt),
+                    "lastVerifiedAt" to MiniJson.num(item.lastVerifiedAt),
+                    "ttlDays" to MiniJson.num(item.ttlDays),
+                    "sourceCount" to MiniJson.num(item.sourceCount),
+                    "supersededBy" to MiniJson.str(item.supersededById ?: ""),
+                    "tags" to MiniJson.strs(item.tags)
+                )
+            }),
             "logs" to MiniJson.arr(snapshot.logs.map { event ->
                 MiniJson.obj(
                     "id" to MiniJson.num(event.id),
@@ -100,7 +129,7 @@ object Backup {
         val canonical = MiniJson.write(data, pretty = false)
         val digest = sha256(canonical)
         val envelope = MiniJson.obj(
-            "schema" to MiniJson.str(SCHEMA),
+            "schema" to MiniJson.str(schema),
             "createdAt" to MiniJson.num(createdAt),
             "appVersion" to MiniJson.str(appVersion),
             "sha256" to MiniJson.str(digest),
@@ -109,6 +138,7 @@ object Backup {
                     "packs" to MiniJson.num(snapshot.packs.size),
                     "listings" to MiniJson.num(snapshot.listings.size),
                     "memory" to MiniJson.num(snapshot.memory.size),
+                    "knowledge" to MiniJson.num(snapshot.knowledge.size),
                     "logs" to MiniJson.num(snapshot.logs.size),
                     "audits" to MiniJson.num(snapshot.audits.size)
                 )
@@ -122,7 +152,7 @@ object Backup {
     fun inspect(json: String): Info {
         val root = parse(json)
         val schema = root["schema"]?.asStringOrNull() ?: throw BackupException("این فایل پشتیبان خوانا نیست: schema ندارد")
-        if (schema != SCHEMA) throw BackupException("نسخهٔ پشتیبان پشتیبانی نمی‌شود: $schema")
+        if (schema !in ACCEPTED_SCHEMAS) throw BackupException("نسخهٔ پشتیبان پشتیبانی نمی‌شود: $schema")
         val data = root["data"] ?: throw BackupException("بلوک data وجود ندارد")
         val declared = root["sha256"]?.asStringOrNull() ?: throw BackupException("چک‌سام وجود ندارد")
         val actual = sha256(MiniJson.write(data, pretty = false))
@@ -185,6 +215,28 @@ object Backup {
             )
         }
 
+        val knowledge = data["knowledge"]?.asObjects().orEmpty().map { row ->
+            KnowledgeItem(
+                id = row["id"]?.asStringOrNull() ?: throw BackupException("دانسته بدون id"),
+                topic = row["topic"]?.asStringOrNull() ?: "",
+                question = row["question"]?.asStringOrNull() ?: "",
+                claim = row["claim"]?.asStringOrNull() ?: "",
+                category = row["category"]?.asStringOrNull() ?: MemoryBank.CAT_FACT,
+                attribute = row["attribute"]?.asStringOrNull()?.takeIf { it.isNotBlank() },
+                numericValue = row["numericValue"]?.asDoubleOrNull(),
+                unit = row["unit"]?.asStringOrNull()?.takeIf { it.isNotBlank() },
+                url = row["url"]?.asStringOrNull() ?: "",
+                domain = row["domain"]?.asStringOrNull() ?: "",
+                confidence = row["confidence"]?.asDoubleOrNull() ?: 0.5,
+                createdAt = row["createdAt"]?.asLongOrNull() ?: 0L,
+                lastVerifiedAt = row["lastVerifiedAt"]?.asLongOrNull() ?: 0L,
+                ttlDays = row["ttlDays"]?.asIntOrNull() ?: KnowledgeBank.DEFAULT_TTL_DAYS,
+                sourceCount = row["sourceCount"]?.asIntOrNull() ?: 1,
+                supersededById = row["supersededBy"]?.asStringOrNull()?.takeIf { it.isNotBlank() },
+                tags = row["tags"]?.asStrings() ?: emptyList()
+            )
+        }
+
         val logs = data["logs"]?.asObjects().orEmpty().map { row ->
             LogEvent(
                 id = row["id"]?.asLongOrNull() ?: 0L,
@@ -211,6 +263,7 @@ object Backup {
             activePackId = activeId,
             listings = listings,
             memory = memory,
+            knowledge = knowledge,
             logs = logs,
             audits = audits,
             answers = data["answers"]?.fieldsOrEmpty?.mapValues { it.value.asStringOrNull().orEmpty() } ?: emptyMap(),

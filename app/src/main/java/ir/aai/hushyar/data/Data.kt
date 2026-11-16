@@ -14,6 +14,11 @@ import ir.aai.hushyar.domain.Listing
 import ir.aai.hushyar.domain.MarketPack
 import ir.aai.hushyar.domain.MemoryItem
 import ir.aai.hushyar.domain.Backup
+import ir.aai.hushyar.domain.KnowledgeBank
+import ir.aai.hushyar.domain.KnowledgeDecision
+import ir.aai.hushyar.domain.KnowledgeItem
+import ir.aai.hushyar.domain.KnowledgeResult
+import ir.aai.hushyar.domain.ResearchBudget
 import ir.aai.hushyar.domain.LogEvent
 import ir.aai.hushyar.domain.MemoryBank
 import ir.aai.hushyar.domain.PackCodec
@@ -65,6 +70,7 @@ class Db(context: Context) : SQLiteOpenHelper(context, NAME, null, VERSION) {
         db.execSQL("CREATE INDEX idx_listing_norm ON listing(title_norm)")
         db.execSQL(MEMORY_TABLE)
         db.execSQL(EVENT_TABLE)
+        db.execSQL(KNOWLEDGE_TABLE)
         db.execSQL("CREATE TABLE preference(k TEXT PRIMARY KEY, v TEXT NOT NULL)")
         db.execSQL(
             """CREATE TABLE audit(
@@ -86,11 +92,14 @@ class Db(context: Context) : SQLiteOpenHelper(context, NAME, null, VERSION) {
             }
             db.execSQL(EVENT_TABLE.replace("CREATE TABLE", "CREATE TABLE IF NOT EXISTS"))
         }
+        if (oldVersion < 3) {
+            db.execSQL(KNOWLEDGE_TABLE.replace("CREATE TABLE", "CREATE TABLE IF NOT EXISTS"))
+        }
     }
 
     companion object {
         private const val NAME = "hushyar.db"
-        private const val VERSION = 2
+        private const val VERSION = 3
 
         private const val MEMORY_TABLE = """CREATE TABLE memory(
                 id TEXT PRIMARY KEY,
@@ -112,6 +121,26 @@ class Db(context: Context) : SQLiteOpenHelper(context, NAME, null, VERSION) {
                 actor TEXT NOT NULL,
                 message TEXT NOT NULL,
                 detail TEXT NOT NULL DEFAULT ''
+            )"""
+
+        private const val KNOWLEDGE_TABLE = """CREATE TABLE knowledge(
+                id TEXT PRIMARY KEY,
+                topic TEXT NOT NULL,
+                question TEXT NOT NULL,
+                claim TEXT NOT NULL,
+                category TEXT NOT NULL,
+                attribute TEXT,
+                numeric_value REAL,
+                unit TEXT,
+                url TEXT NOT NULL DEFAULT '',
+                domain TEXT NOT NULL DEFAULT '',
+                confidence REAL NOT NULL DEFAULT 0.5,
+                created_at INTEGER NOT NULL,
+                last_verified_at INTEGER NOT NULL,
+                ttl_days INTEGER NOT NULL DEFAULT 45,
+                source_count INTEGER NOT NULL DEFAULT 1,
+                superseded_by TEXT,
+                tags TEXT NOT NULL DEFAULT '[]'
             )"""
 
         private val MEMORY_V2_COLUMNS = listOf(
@@ -403,6 +432,136 @@ class Repos(private val db: Db) {
     fun countMemories(): Int =
         db.readableDatabase.rawQuery("SELECT COUNT(*) FROM memory", null).use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
 
+    // ---------- knowledge store (facts the assistant found by itself) ----------
+
+    private fun knowledgeValues(item: KnowledgeItem): ContentValues = ContentValues().apply {
+        put("id", item.id)
+        put("topic", item.topic)
+        put("question", item.question)
+        put("claim", item.claim)
+        put("category", item.category)
+        put("attribute", item.attribute)
+        if (item.numericValue != null) put("numeric_value", item.numericValue) else putNull("numeric_value")
+        put("unit", item.unit)
+        put("url", item.url)
+        put("domain", item.domain)
+        put("confidence", item.confidence)
+        put("created_at", item.createdAt)
+        put("last_verified_at", item.lastVerifiedAt)
+        put("ttl_days", item.ttlDays)
+        put("source_count", item.sourceCount)
+        put("superseded_by", item.supersededById)
+        put("tags", MiniJson.write(MiniJson.strs(item.tags), pretty = false))
+    }
+
+    private fun readKnowledge(c: Cursor): KnowledgeItem {
+        fun str(column: String, fallback: String = ""): String {
+            val idx = c.getColumnIndex(column)
+            return if (idx < 0 || c.isNull(idx)) fallback else c.getString(idx)
+        }
+        val numericIdx = c.getColumnIndex("numeric_value")
+        val tagsIdx = c.getColumnIndex("tags")
+        val tags = if (tagsIdx < 0) emptyList() else runCatching {
+            MiniJson.parse(c.getString(tagsIdx)).asStrings()
+        }.getOrDefault(emptyList())
+        return KnowledgeItem(
+            id = c.getString(c.getColumnIndexOrThrow("id")),
+            topic = str("topic"),
+            question = str("question"),
+            claim = str("claim"),
+            category = str("category", MemoryBank.CAT_FACT),
+            attribute = str("attribute").takeIf { it.isNotBlank() },
+            numericValue = if (numericIdx < 0 || c.isNull(numericIdx)) null else c.getDouble(numericIdx),
+            unit = str("unit").takeIf { it.isNotBlank() },
+            url = str("url"),
+            domain = str("domain"),
+            confidence = if (c.getColumnIndex("confidence") < 0) 0.5 else c.getDouble(c.getColumnIndex("confidence")),
+            createdAt = c.getLong(c.getColumnIndexOrThrow("created_at")),
+            lastVerifiedAt = if (c.getColumnIndex("last_verified_at") < 0) 0L else c.getLong(c.getColumnIndex("last_verified_at")),
+            ttlDays = if (c.getColumnIndex("ttl_days") < 0) KnowledgeBank.DEFAULT_TTL_DAYS else c.getInt(c.getColumnIndex("ttl_days")),
+            sourceCount = if (c.getColumnIndex("source_count") < 0) 1 else c.getInt(c.getColumnIndex("source_count")),
+            supersededById = str("superseded_by").takeIf { it.isNotBlank() },
+            tags = tags
+        )
+    }
+
+    fun knowledgeAll(limit: Int = 1000): List<KnowledgeItem> =
+        db.readableDatabase.query("knowledge", null, null, null, null, null, "last_verified_at DESC", limit.toString()).use { c ->
+            val out = mutableListOf<KnowledgeItem>()
+            while (c.moveToNext()) out.add(readKnowledge(c))
+            return out
+        }
+
+    fun knowledgeByTopic(topic: String): List<KnowledgeItem> =
+        db.readableDatabase.query("knowledge", null, "topic = ?", arrayOf(topic), null, null, "last_verified_at DESC").use { c ->
+            val out = mutableListOf<KnowledgeItem>()
+            while (c.moveToNext()) out.add(readKnowledge(c))
+            return out
+        }
+
+    fun countKnowledge(): Int =
+        db.readableDatabase.rawQuery("SELECT COUNT(*) FROM knowledge", null).use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
+
+    /**
+     * Merge one observation using the pure policy in [KnowledgeBank], then persist whatever the
+     * merge produced (insert, refresh, correction, conflict). Contradictions keep history: the
+     * superseded row stays in the table, only marked.
+     */
+    fun knowledgeUpsert(item: KnowledgeItem): KnowledgeResult {
+        val existing = knowledgeByTopic(item.topic)
+        val merge = KnowledgeBank.merge(existing, item)
+        if (merge.decision == KnowledgeDecision.IGNORE) {
+            return KnowledgeResult(item.id, merge.decision, "نادیده گرفته شد (اعتماد کمتر)")
+        }
+        val w = db.writableDatabase
+        w.beginTransaction()
+        try {
+            for (row in merge.items) {
+                w.insertWithOnConflict("knowledge", null, knowledgeValues(row), SQLiteDatabase.CONFLICT_REPLACE)
+            }
+            w.setTransactionSuccessful()
+        } finally {
+            w.endTransaction()
+        }
+        val summary = when (merge.decision) {
+            KnowledgeDecision.NEW -> "دانش تازه در «${item.category}»"
+            KnowledgeDecision.REFRESH -> "بازبینی شد (${item.domain})"
+            KnowledgeDecision.CORRECT -> "مقدار قبلی اصلاح شد با ${item.domain}"
+            KnowledgeDecision.CONFLICT -> "تناقض منابع ثبت شد (${item.domain})"
+            KnowledgeDecision.IGNORE -> "نادیده گرفته شد"
+        }
+        audit("agent", "knowledge.${merge.decision.name.lowercase()}", item.id, item.claim.take(180))
+        log("knowledge", "agent", "$summary :: ${item.claim.take(120)}", item.url)
+        return KnowledgeResult(merge.touchedId ?: item.id, merge.decision, summary)
+    }
+
+    fun knowledgeAnswerable(question: String, now: Long = this.now, limit: Int = 5): List<KnowledgeItem> =
+        KnowledgeBank.answerable(question, knowledgeAll(800), now, limit)
+
+    fun knowledgeStale(now: Long = this.now, limit: Int = 20): List<KnowledgeItem> =
+        KnowledgeBank.staleItems(knowledgeAll(800), now).take(limit)
+
+    fun updateKnowledge(item: KnowledgeItem) {
+        db.writableDatabase.update("knowledge", knowledgeValues(item), "id = ?", arrayOf(item.id))
+        audit("user", "knowledge.update", item.id, item.claim.take(160))
+    }
+
+    fun deleteKnowledge(id: String): Boolean {
+        val removed = db.writableDatabase.delete("knowledge", "id = ?", arrayOf(id)) > 0
+        if (removed) audit("user", "knowledge.delete", id, "")
+        return removed
+    }
+
+    /** "سریع / متعادل / عمیق" — the user's research budget. */
+    fun researchDepth(): String = preference("research_depth") ?: "balanced"
+
+    fun setResearchDepth(name: String) {
+        putPreference("research_depth", name)
+        audit("user", "research.depth", name, "")
+    }
+
+    fun researchBudget(): ResearchBudget = ResearchBudget.byName(researchDepth())
+
     // ---------- event log (the assistant's own .md source) ----------
 
     fun log(kind: String, actor: String, message: String, detail: String = "") {
@@ -505,7 +664,7 @@ class Repos(private val db: Db) {
         val w = db.writableDatabase
         w.beginTransaction()
         try {
-            listOf("listing", "pack", "interview", "memory", "preference", "audit", "event").forEach { w.delete(it, null, null) }
+            listOf("listing", "pack", "interview", "memory", "preference", "audit", "event", "knowledge").forEach { w.delete(it, null, null) }
             w.setTransactionSuccessful()
         } finally {
             w.endTransaction()
@@ -543,6 +702,7 @@ class Repos(private val db: Db) {
         activePackId = activePackId(),
         listings = listings(),
         memory = memoryAll(5000),
+        knowledge = knowledgeAll(5000),
         logs = events(5000),
         audits = auditsAll(5000),
         answers = allAnswers(),
@@ -557,7 +717,7 @@ class Repos(private val db: Db) {
         val w = db.writableDatabase
         w.beginTransaction()
         try {
-            listOf("listing", "pack", "interview", "memory", "preference", "audit", "event").forEach { w.delete(it, null, null) }
+            listOf("listing", "pack", "interview", "memory", "preference", "audit", "event", "knowledge").forEach { w.delete(it, null, null) }
             for (pack in snapshot.packs) {
                 val values = ContentValues().apply {
                     put("id", pack.id)
@@ -574,6 +734,9 @@ class Repos(private val db: Db) {
             }
             for (item in snapshot.memory) {
                 w.insertWithOnConflict("memory", null, memoryValues(item), SQLiteDatabase.CONFLICT_REPLACE)
+            }
+            for (item in snapshot.knowledge) {
+                w.insertWithOnConflict("knowledge", null, knowledgeValues(item), SQLiteDatabase.CONFLICT_REPLACE)
             }
             for (event in snapshot.logs) {
                 val values = ContentValues().apply {

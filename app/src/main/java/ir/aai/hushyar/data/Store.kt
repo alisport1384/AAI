@@ -95,7 +95,7 @@ class Store(private val context: Context) {
         appendLine("ساخته‌شده: $stamp")
         appendLine()
         appendLine("backup.json        — بازگردانی کامل (پک بازار، آگهی‌ها، حافظه، لاگ، ممیزی، تنظیمات)")
-        appendLine("brain.md           — دفتر هوش: حافظه، ممیزی و لاگ به زبان انسان")
+        appendLine("brain.md           — دفتر هوش: حافظه، دانش وب، ممیزی و لاگ به زبان انسان")
         appendLine("logs/hushyar-log.md — لاگ فعالیت")
         appendLine("memory/memory.md    — حافظهٔ دسته‌بندی‌شده")
         appendLine()
