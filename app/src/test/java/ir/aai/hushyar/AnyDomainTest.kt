@@ -53,7 +53,10 @@ class AnyDomainTest {
         assertTrue(f.entityKnown)
         assertEquals(Ask.PRICE, f.ask)
         assertEquals("dozen", f.basis)
-        assertTrue("جنس باید خوانده شود", f.qualifiers.any { it.value.contains("پنبه") })
+        assertTrue(
+            "جنس باید خوانده شود («نخی» همان جنس است، نه یک واژهٔ تزئینی)",
+            f.qualifiers.any { it.name == "material" && it.value.contains("نخ") }
+        )
         assertTrue("سایز باید خوانده شود", f.qualifiers.any { it.value == "L" })
     }
 
