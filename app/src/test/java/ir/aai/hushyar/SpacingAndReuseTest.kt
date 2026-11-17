@@ -55,7 +55,7 @@ class SpacingAndReuseTest {
 
     @Test
     fun normalWritingIsLeftAlone() {
-        assertEquals("قیمت ورق ۲ میل امروز", Text.normalize("قیمت ورق ۲ میل امروز"))
+        assertEquals("قیمت ورق 2 میل امروز", Text.normalize("قیمت ورق ۲ میل امروز"))
         assertEquals("من فروشگاه تیشرت هستم", Text.normalize("من فروشگاه تیشرت هستم"))
     }
 

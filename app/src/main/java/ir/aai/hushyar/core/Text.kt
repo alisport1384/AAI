@@ -78,9 +78,11 @@ object Text {
         val segments = s.split(Regex("[\\t\\n\\r]+| {2,}"))
         val fixed = segments.map { segment ->
             val words = segment.trim().split(' ').filter { it.isNotEmpty() }
-            val singles = words.count { it.length == 1 && it[0].isLetter() && it[0] != 'و' }
+            // همهٔ واژه‌های بخش باید تک‌حرفی باشند. «و» هم داخل این دسته یک حرف از خودِ کلمه است
+            // («ش ل و ا ر» → «شلوار»)؛ فقط بخشِ تک‌واژه‌ایِ «و» جدا می‌ماند، چون به سه تک‌حرفی نمی‌رسد.
+            val allSingle = words.isNotEmpty() && words.all { it.length == 1 && it[0].isLetter() }
             when {
-                words.size >= 3 && singles == words.size &&
+                words.size >= 3 && allSingle &&
                     words.joinToString("").length <= 12 -> words.joinToString("")
                 else -> segment.trim()
             }
