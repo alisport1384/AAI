@@ -151,6 +151,34 @@ object ModelFit {
 
     private val safe32: String get() = Text.num(mb(SAFE_32BIT_BYTES))
 
+    /**
+     * بیشترین حجم فایلی که با اندازه‌های همین دستگاه منطقی است.
+     *
+     * برای پردازهٔ ۳۲بیتی سقف ثابت ۹۰۰ مگابایت؛ برای ۶۴بیتی از برآورد نیاز برمی‌گردیم
+     * (حجم فایل ≈ دو برابرِ حافظهٔ آزاد منهای ۳۲۰ مگابایت). صفر یعنی «اندازه‌گیری نشد».
+     */
+    fun maxUsableBytes(device: DeviceMemory): Long {
+        if (device.totalBytes <= 0 && device.availBytes <= 0) return 0
+        val byBits = if (device.is64Bit) Long.MAX_VALUE / 4 else SAFE_32BIT_BYTES
+        val avail = if (device.availBytes > 0) device.availBytes else device.totalBytes
+        val byRam = (avail - 320 * MB) * 2
+        if (byRam <= 0) return 0
+        return minOf(byBits, byRam)
+    }
+
+    /** بزرگ‌ترین مدل فهرست که روی این دستگاه بارگذاری‌شدنی است. */
+    fun bestFor(device: DeviceMemory, specs: List<ModelSpec>): ModelSpec? =
+        specs.filter { verdict(device, it.bytes, installed = true) == FitVerdict.FITS }
+            .maxByOrNull { it.bytes }
+
+    /** یک جملهٔ کوتاه: «این گوشی تا چه حجمی را می‌تواند بارگذاری کند». */
+    fun capacityLine(device: DeviceMemory): String {
+        val max = maxUsableBytes(device)
+        if (max <= 0) return "سقف حجم مدل برای این گوشی اندازه‌گیری نشد."
+        return "سقف این گوشی: مدلی تا حدود " + fa(max) + " مگابایت (پردازه " + bits(device) +
+            "، " + fa(device.availBytes) + " مگابایت حافظهٔ آزاد). بزرگ‌تر از این، موتور بارگذاری نمی‌کند."
+    }
+
     /** The verdict as the user should read it — never an English enum name in a Persian app. */
     fun verdictLabel(verdict: FitVerdict): String = when (verdict) {
         FitVerdict.FITS -> "جا می‌شود"

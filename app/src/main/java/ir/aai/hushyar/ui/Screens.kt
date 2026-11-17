@@ -732,7 +732,7 @@ private fun ModelTab(vm: AppViewModel) {
                     }
                 }
                 Text(spec.note, style = MaterialTheme.typography.bodySmall)
-                // v0.11.2: measured on *this* phone, before the user spends a gigabyte of data.
+                // v0.11.2/3: measured on *this* phone, before the user spends a gigabyte of data.
                 val advisory = remember(spec.id, local.specId) { vm.fitAdvisory(spec.id) }
                 advisory?.let {
                     Text(
@@ -741,12 +741,20 @@ private fun ModelTab(vm: AppViewModel) {
                         color = MaterialTheme.colorScheme.error
                     )
                 }
+                if (spec.id == vm.bestModelId()) {
+                    Text(
+                        "بزرگ‌ترین مدلی که این گوشی می‌تواند بارگذاری کند",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
+                }
             }
         }
     }
 
     HorizontalDivider()
     SectionTitle("دانلود و نصب")
+    Body(vm.capacityLine())
     Text("فایل روی حافظهٔ خصوصی اپ ذخیره می‌شود؛ حجم: ${local.spec.sizeLabel}", style = MaterialTheme.typography.bodySmall)
     when (local.phase) {
         ModelPhase.ENGINE_ERROR -> {
@@ -794,6 +802,12 @@ private fun ModelTab(vm: AppViewModel) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = { vm.loadModelNow() }, modifier = Modifier.weight(1f)) { Text("بارگذاری در حافظه") }
                 OutlinedButton(onClick = { vm.deleteModel() }, modifier = Modifier.weight(1f)) { Text("حذف فایل") }
+            }
+            vm.fitAdvisory(local.specId)?.let {
+                Body(
+                    "هشدار بالا یعنی طبق اندازه‌گیری‌ها این مدل روی این گوشی جا نمی‌شود. دکمهٔ بالا " +
+                        "باز هم تلاش می‌کند: اگر شکست بخورد چیزی خراب نمی‌شود و دلیلش با عدد نوشته می‌شود."
+                )
             }
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {

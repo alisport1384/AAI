@@ -69,8 +69,7 @@ object ModelCatalog {
             contextTokens = 32_768,
             license = "Apache-2.0",
             note = "پیشنهاد پیش‌فرض: فارسی را می‌فهمد و می‌نویسد، ۴۹۱ مگابایت، روی گوشی متوسط " +
-                "چند توکن در ثانیه. مجوز Apache-2.0، بدون محدودیت استفاده.",
-            recommended = true
+                "چند توکن در ثانیه. مجوز Apache-2.0، بدون محدودیت استفاده."
         ),
         ModelSpec(
             id = "qwen2.5-0.5b-q4_0",
@@ -115,7 +114,7 @@ object ModelCatalog {
         ModelSpec(
             id = "qwen3-1.7b-q4km",
             title = "Qwen3 1.7B (Q4_K_M)",
-            family = "qwen2.5",
+            family = "qwen3",
             fileName = "Qwen3-1.7B-Q4_K_M.gguf",
             url = "$HOST/unsloth/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q4_K_M.gguf",
             bytes = 1_107_409_472L,
@@ -137,6 +136,65 @@ object ModelCatalog {
             license = "Llama 3.2 Community License",
             note = "بزرگ‌ترین گزینهٔ فهرست: ۳ میلیارد پارامتر، ۲ گیگابایت دانلود و حدود ۳ گیگابایت " +
                 "RAM. روی گوشی ۳۲ بیتی عملاً کند است؛ فقط برای گوشی قوی. فارسی آن از Qwen ضعیف‌تر است."
+        ),
+        // ---- v0.11.3: مدل‌هایی که در سقفِ واقعیِ گوشیِ ۳۲بیتی جا می‌شوند ----
+        // اندازه و SHA-256 از API خودِ HuggingFace خوانده شده؛ سربرگ هر فایل هم اینجا باز و
+        // بررسی شده (معماری: qwen3 / llama / qwen2).
+        ModelSpec(
+            id = "qwen3-0.6b-q8",
+            title = "Qwen3 0.6B (Q8_0)",
+            family = "qwen3",
+            fileName = "Qwen3-0.6B-Q8_0.gguf",
+            url = "$HOST/unsloth/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q8_0.gguf",
+            bytes = 639_447_744L,
+            sha256 = "e150ed544dfe6016930c026a93913a5e3184181ebfe6ab2223ae01dd0491784c",
+            contextTokens = 32_768,
+            license = "Apache-2.0",
+            note = "بهترین نسبت «توان به حجم» برای گوشی‌هایی که پردازهٔ ۳۲بیتی دارند: ۰٫۶ میلیارد " +
+                "پارامتر با دقت ۸ بیت، ۶۱۰ مگابایت. نسخهٔ سوم Qwen با فارسی بهتر از ۰٫۵B و در " +
+                "سقف مطمئن یک پردازهٔ ۳۲بیتی جا می‌شود."
+        ),
+        ModelSpec(
+            id = "qwen3-0.6b-q4km",
+            title = "Qwen3 0.6B (Q4_K_M)",
+            family = "qwen3",
+            fileName = "Qwen3-0.6B-Q4_K_M.gguf",
+            url = "$HOST/unsloth/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q4_K_M.gguf",
+            bytes = 396_705_472L,
+            sha256 = "ac2d97712095a558e31573f62f466a3f9d93990898b0ec79d7c974c1780d524a",
+            contextTokens = 32_768,
+            license = "Apache-2.0",
+            note = "پیشنهاد پیش‌فرض: همان Qwen3 0.6B با کوانت ۴ بیتی، ۳۷۸ مگابایت — از " +
+                "Qwen2.5 0.5B کوچک‌تر و در فارسی بهتر است، و روی هر گوشی‌ای حتی ۲ گیگابایتی " +
+                "بارگذاری می‌شود. مجوز Apache-2.0.",
+            recommended = true
+        ),
+        ModelSpec(
+            id = "llama-3.2-1b-q4km",
+            title = "Llama 3.2 1B Instruct (Q4_K_M)",
+            family = "generic",
+            fileName = "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+            url = "$HOST/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+            bytes = 807_694_464L,
+            sha256 = "6f85a640a97cf2bf5b8e764087b1e83da0fdb51d7c9fab7d0fece9385611df83",
+            contextTokens = 8_192,
+            license = "Llama 3.2 Community License",
+            note = "۱ میلیارد پارامتر، ۷۷۰ مگابایت — نزدیک سقفِ یک پردازهٔ ۳۲بیتی. فارسی آن از " +
+                "Qwen3 0.6B ضعیف‌تر است ولی انگلیسی و دستورپذیری‌اش بهتر؛ اگر گوشی ۶۴بیتی است " +
+                "گزینهٔ خوبی است."
+        ),
+        ModelSpec(
+            id = "qwen2.5-1.5b-q2k",
+            title = "Qwen2.5 1.5B Instruct (Q2_K)",
+            family = "qwen2.5",
+            fileName = "qwen2.5-1.5b-instruct-q2_k.gguf",
+            url = "$HOST/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q2_k.gguf",
+            bytes = 752_880_160L,
+            sha256 = "5ede348e91ce1e7a330926ec5b202c27b864d065149dc463257fde1f98865b3a",
+            contextTokens = 32_768,
+            license = "Apache-2.0",
+            note = "بیشترین پارامتر (۱٫۵ میلیارد) که در سقف ۳۲بیتی جا می‌شود، ولی با کوانت ۲ بیتی: " +
+                "۷۱۸ مگابایت و کیفیت جمله‌سازی‌اش از Qwen3 0.6B کمتر است. برای آزمایش، نه برای کار روزانه."
         )
     )
 
@@ -239,6 +297,18 @@ object LocalPrompt {
             append("<|im_start|>user\n").append(user).append("<|im_end|>\n")
             append("<|im_start|>assistant\n")
         }
+        "qwen3" -> buildString {
+            // Qwen3 is ChatML like Qwen2.5, but it thinks out loud by default. `/no_think` is the
+            // switch the model itself documents; without it the answer arrives wrapped in
+            //  thinking… response and every grounding check has to fight it.
+            append("<|im_start|>system\n").append(system).append("<|im_end|>\n")
+            if (example != null) {
+                append("<|im_start|>user\n").append(example.first).append("<|im_end|>\n")
+                append("<|im_start|>assistant\n").append(example.second).append("<|im_end|>\n")
+            }
+            append("<|im_start|>user\n").append(user).append(" /no_think").append("<|im_end|>\n")
+            append("<|im_start|>assistant\n")
+        }
         "gemma3" -> buildString {
             // Gemma has no system role: the instruction rides in the first user turn.
             append("<start_of_turn>user\n").append(system)
@@ -262,6 +332,22 @@ object LocalPrompt {
 
     fun groundedRewrite(spec: ModelSpec, lang: String, draft: AnswerDraft): String =
         chat(spec.family, system(lang), groundedUser(lang, draft), example(lang))
+
+    /**
+     * Removes a leading `thinking` block some models (Qwen3, DeepSeek distill) emit.
+     * The closing tag is what matters: everything up to and including it is not the answer.
+     */
+    fun stripThinking(text: String): String {
+        val close = text.lastIndexOf("end_of_thought>")
+        val alt = text.lastIndexOf("\u003c/think\u003e")
+        val cut = maxOf(close, alt)
+        if (cut >= 0) {
+            val after = text.substring(cut)
+            val tail = after.substringAfter('>', "")
+            if (tail.isNotBlank()) return tail.trim()
+        }
+        return text.trim()
+    }
 
     /** A fixed, harmless prompt used by the "آزمایش موتور" button. */
     fun selfTest(spec: ModelSpec): String =

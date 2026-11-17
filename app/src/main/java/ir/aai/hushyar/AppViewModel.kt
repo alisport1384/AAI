@@ -243,6 +243,12 @@ class AppViewModel(
         return ModelFit.failureReport(deviceMemory(), spec, header)
     }
 
+    /** «این گوشی تا چه حجمی را بارگذاری می‌کند» — از اندازه‌های همین لحظه. */
+    fun capacityLine(): String = ModelFit.capacityLine(deviceMemory())
+
+    /** The strongest model in the catalogue that this phone can actually load. */
+    fun bestModelId(): String? = ModelFit.bestFor(deviceMemory(), ModelCatalog.all)?.id
+
     /** One line for the model list, shown *before* the user spends a gigabyte of data. */
     fun fitAdvisory(id: String): String? {
         val spec = runCatching { ModelCatalog.find(id) }.getOrNull() ?: return null
