@@ -31,6 +31,7 @@ import ir.aai.hushyar.domain.Analyzer
 import ir.aai.hushyar.domain.Answer
 import ir.aai.hushyar.domain.AttributeExtractor
 import ir.aai.hushyar.domain.Catalog
+import ir.aai.hushyar.domain.EngineDiagnosis
 import ir.aai.hushyar.domain.Interview
 import ir.aai.hushyar.domain.Listing
 import ir.aai.hushyar.domain.MarketPack
@@ -145,6 +146,12 @@ class AppViewModel(
     var localProof by mutableStateOf<String?>(null)
         private set
 
+    /** v0.8.1: the honest answer to "why did the engine not load on this device". */
+    var engineReport by mutableStateOf<String?>(null)
+        private set
+    var engineVerdict by mutableStateOf(EngineDiagnosis.Verdict.UNKNOWN)
+        private set
+
     /** v0.8: deep study state — what was asked, what came back, layer by layer. */
     var studyRunning by mutableStateOf(false)
         private set
@@ -193,9 +200,38 @@ class AppViewModel(
             downloadedBytes = if (part > 0) part else if (installed) spec.bytes else 0,
             totalBytes = spec.bytes,
             engineReady = engine.ready,
+            installed = installed,
             backend = engine.backend,
             message = engine.lastError
         )
+    }
+
+    /**
+     * Reads the facts the device itself reports and says which failure this is. Cheap and
+     * context-free: ABIs and page size come from the framework, the library's page alignment
+     * comes from a constant that a unit test keeps honest against the committed `.so`.
+     */
+    fun diagnoseEngine() {
+        val facts = runCatching {
+            val failure = ir.aai.hushyar.core.LlamaNative.loadFailure
+            EngineDiagnosis.Facts(
+                loadFailure = failure,
+                abis = android.os.Build.SUPPORTED_ABIS?.toList().orEmpty(),
+                pageSizeBytes = runCatching {
+                    android.system.Os.sysconf(android.system.OsConstants._SC_PAGESIZE)
+                }.getOrDefault(0L),
+                apiLevel = android.os.Build.VERSION.SDK_INT,
+                deviceModel = (android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL).trim(),
+                libAlign = EngineDiagnosis.SHIPPED_LIB_ALIGN,
+                libPresent = !EngineDiagnosis.libraryMissingFromError(failure)
+            )
+        }.getOrNull()
+        if (facts == null) {
+            engineReport = "گزارش تشخیص ساخته نشد: اطلاعات دستگاه خوانده نشد."
+            return
+        }
+        engineVerdict = EngineDiagnosis.verdict(facts)
+        engineReport = EngineDiagnosis.report(facts, extra = engine.lastError)
     }
 
     fun chooseModel(id: String) {

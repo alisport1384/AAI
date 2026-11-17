@@ -422,6 +422,8 @@ data class LocalModelUi(
     val downloadedBytes: Long = 0,
     val totalBytes: Long = 0,
     val engineReady: Boolean = false,
+    /** The model file is on disk and verified — independent of whether the engine can load it. */
+    val installed: Boolean = false,
     val backend: String = "",
     val usingForAnswers: Boolean = false,
     val message: String? = null,

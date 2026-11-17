@@ -38,6 +38,7 @@ import ir.aai.hushyar.domain.KnowledgeItem
 import ir.aai.hushyar.domain.Listing
 import ir.aai.hushyar.domain.ModelCatalog
 import ir.aai.hushyar.domain.ModelPhase
+import ir.aai.hushyar.domain.ModelUiRules
 import androidx.compose.material3.Switch
 import ir.aai.hushyar.domain.MemoryBank
 import ir.aai.hushyar.domain.MemoryItem
@@ -661,7 +662,10 @@ private fun MemoryTab(vm: AppViewModel) {
 private fun ModelTab(vm: AppViewModel) {
     val local = vm.localModel
     var question by remember { mutableStateOf("") }
-    LaunchedEffect(Unit) { vm.refreshLocal() }
+    LaunchedEffect(Unit) {
+        vm.refreshLocal()
+        vm.diagnoseEngine()
+    }
 
     // One download, forever: the file can be written out and brought back later, so a new
     // version of the app (or a new phone) never costs another 0.5 GB.
@@ -682,7 +686,9 @@ private fun ModelTab(vm: AppViewModel) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(
                 when (local.phase) {
-                    ModelPhase.ENGINE_ERROR -> "موتور: در دسترس نیست"
+                    ModelPhase.ENGINE_ERROR ->
+                        if (local.installed) "موتور: در دسترس نیست (فایل مدل ذخیره شده)"
+                        else "موتور: در دسترس نیست"
                     ModelPhase.DOWNLOADING -> "در حال دانلود"
                     ModelPhase.READY -> "مدل نصب شده"
                     ModelPhase.MISSING -> "مدلی نصب نیست"
@@ -734,10 +740,39 @@ private fun ModelTab(vm: AppViewModel) {
     SectionTitle("دانلود و نصب")
     Text("فایل روی حافظهٔ خصوصی اپ ذخیره می‌شود؛ حجم: ${local.spec.sizeLabel}", style = MaterialTheme.typography.bodySmall)
     when (local.phase) {
-        ModelPhase.ENGINE_ERROR -> Body(
-            "کتابخانهٔ موتور روی این دستگاه بارگذاری نشد، پس دانلود فایده ندارد. " +
-                "علت در بخش وضعیت بالا آمده است."
-        )
+        ModelPhase.ENGINE_ERROR -> {
+            // v0.8.1: an engine that cannot load is a reason to warn, not to forbid. The 0.5 GB
+            // file is still worth having — it can be exported and restored on a device that can
+            // run it — and the rest of the app's intelligence does not need it at all.
+            Body("کتابخانهٔ موتور روی این دستگاه بارگذاری نشد.")
+            Body(ModelUiRules.engineWarning(vm.engineVerdict))
+            OutlinedButton(
+                onClick = { vm.diagnoseEngine() },
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("گزارش تشخیص دستگاه") }
+            vm.engineReport?.let { report ->
+                Card(Modifier.fillMaxWidth()) {
+                    Text(
+                        report,
+                        Modifier.padding(12.dp),
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                }
+            }
+            if (local.installed) {
+                Body("فایل مدل روی این دستگاه ذخیره شده است (${local.spec.sizeLabel}).")
+            } else {
+                Button(
+                    onClick = { vm.downloadModel() },
+                    enabled = ModelUiRules.canDownload(local.phase, local.phase == ModelPhase.DOWNLOADING),
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("دانلود فایل مدل (${local.spec.sizeLabel}) — بعداً قابل استفاده") }
+                Body(
+                    "این دانلود فقط فایل را ذخیره می‌کند؛ تا وقتی موتور روی این دستگاه بارگذاری " +
+                        "نشود، مدل اجرا نمی‌شود. هیچ چیز دیگری در اپ به آن وابسته نیست."
+                )
+            }
+        }
         ModelPhase.DOWNLOADING -> {
             LinearProgressIndicator(progress = { local.progress }, modifier = Modifier.fillMaxWidth())
             Text(
@@ -782,7 +817,7 @@ private fun ModelTab(vm: AppViewModel) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         OutlinedButton(
             onClick = { saveLauncher.launch(local.spec.fileName) },
-            enabled = local.phase == ModelPhase.READY,
+            enabled = ModelUiRules.canExport(local.installed),
             modifier = Modifier.weight(1f)
         ) { Text("ذخیرهٔ فایل مدل") }
         OutlinedButton(
