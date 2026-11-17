@@ -40,7 +40,12 @@ import ir.aai.hushyar.domain.MemoryBank
 import ir.aai.hushyar.domain.MemoryItem
 import ir.aai.hushyar.domain.KnowledgeBank
 import ir.aai.hushyar.domain.KnowledgeItem
+import ir.aai.hushyar.domain.AgentBriefing
+import ir.aai.hushyar.domain.AgentDecision
+import ir.aai.hushyar.domain.Growth
+import ir.aai.hushyar.domain.LocalAction
 import ir.aai.hushyar.domain.LocalBrain
+import ir.aai.hushyar.domain.LocalPlanner
 import ir.aai.hushyar.domain.LocalChatter
 import ir.aai.hushyar.domain.LocalGeneration
 import ir.aai.hushyar.domain.LocalModelUi
@@ -144,6 +149,12 @@ class AppViewModel(
     ))
         private set
     var localProof by mutableStateOf<String?>(null)
+        private set
+
+    /** v0.9: what the brain decided before any work was done, and how much the app now knows. */
+    var lastDecision by mutableStateOf<AgentDecision?>(null)
+        private set
+    var growth by mutableStateOf(Growth.Report())
         private set
 
     /** v0.8.1: the honest answer to "why did the engine not load on this device". */
@@ -633,6 +644,74 @@ class AppViewModel(
         if (question.isBlank()) return
         steps = emptyList()
         io({
+            // v0.9: the local model is the brain. It is told the market, the standing goals and how
+            // much is already stored, then chooses one action; the code below only carries it out.
+            // Without a model — or when the model answers with something unusable — the same
+            // decision comes from LocalPlanner.heuristic, and `fromModel` records which one it was.
+            val langForPlan = if (question.any { it in '\u0600'..'\u06FF' }) "fa" else "en"
+            val known = repos.knowledgeAll(800)
+            val goals = tools.goalsNow()
+            val briefing = AgentBriefing(
+                request = question,
+                lang = langForPlan,
+                goals = goals,
+                marketName = pack?.name.orEmpty(),
+                marketSells = pack?.categories?.take(3)?.joinToString("، ").orEmpty(),
+                knownFacts = known.size,
+                knownDomains = known.map { it.domain }.filter { it.isNotBlank() }.distinct().size,
+                memoryHit = repos.knowledgeAnswerable(question, now = System.currentTimeMillis(), limit = 3).isNotEmpty(),
+                topFacts = repos.knowledgeAnswerable(question, now = System.currentTimeMillis(), limit = 3)
+                    .map { it.claim },
+                marketAttributes = pack?.attributes?.map { it.label }.orEmpty(),
+                gaps = known.isEmpty().let { if (it) listOf("چیزی ذخیره نشده") else emptyList() }
+            )
+            val decision = LocalPlanner.decide(
+                request = question,
+                lang = langForPlan,
+                briefing = briefing,
+                generator = if (localModel.usingForAnswers && engine.ready) engine else null,
+                spec = localModel.spec
+            )
+            lastDecision = decision
+            repos.log("brain", "local", "${decision.action.name} → ${decision.reason}", decision.query.take(120))
+
+            if (decision.action == LocalAction.GREET && engine.ready) {
+                // Pure talk. No search, no evidence, and the answer card says so.
+                val chat = runCatching { LocalChatter(engine, localModel.spec).reply(question, langForPlan) }.getOrNull()
+                val text = chat?.text?.trim()
+                if (!text.isNullOrBlank()) {
+                    return@io ir.aai.hushyar.domain.AgentOutcome(
+                        answer = ir.aai.hushyar.domain.Answer(
+                            intent = "chat/local",
+                            text = text,
+                            lang = langForPlan,
+                            confidence = 0.2,
+                            trace = listOf("پاسخ فقط از مدل محلی؛ شاهد وب ندارد"),
+                            refused = false
+                        ),
+                        steps = listOf(
+                            ir.aai.hushyar.domain.AgentStep(
+                                1,
+                                "هستهٔ محلی: گفت‌وگوی ساده — ${decision.reason}",
+                                if (decision.fromModel) "brain/local-model" else "brain/rules",
+                                mapOf("action" to decision.action.name),
+                                "بدون جستجو، بدون شاهد"
+                            )
+                        ),
+                        actions = emptyList()
+                    )
+                }
+            }
+            when (decision.action) {
+                LocalAction.STUDY -> {
+                    val topic = decision.query.ifBlank { question }
+                    val langTag = if (topic.any { it in '\u0600'..'\u06FF' }) "fa" else "en"
+                    val brain = if (localModel.usingForAnswers && engine.ready) LocalBrain(engine, localModel.spec) else null
+                    runCatching { tools.deepStudy(topic, langTag, StudyBudget.byName(repos.researchDepth()), brain) }
+                }
+                else -> Unit
+            }
+
             // v0.8: a knowledge request ("یاد بگیر…", "همه‌چیز درباره…") runs the full study loop
             // first — every engine, layered — so the answer below is built from fresh material
             // that also stays for later questions.
@@ -653,7 +732,24 @@ class AppViewModel(
                 }
             }
             val agent = Agent(tools, phraserFactory)
-            val outcome = agent.run(question, allowWeb = true)
+            // "Answer from what we already know" means exactly that: the web is not touched. If the
+            // stored knowledge cannot carry it, the agent refuses honestly and we then allow one
+            // web pass — recorded, not hidden.
+            var outcome = agent.run(question, allowWeb = decision.action != LocalAction.ANSWER_MEMORY)
+            var corrected = false
+            if (outcome.answer.refused && decision.action == LocalAction.ANSWER_MEMORY) {
+                outcome = agent.run(question, allowWeb = true)
+                corrected = true
+            }
+            val brainStep = ir.aai.hushyar.domain.AgentStep(
+                index = 0,
+                thought = "هستهٔ محلی: ${decision.action.fa} — ${decision.reason}" +
+                    (if (corrected) " (دانش کافی نبود، یک بار جستجو مجاز شد)" else ""),
+                tool = if (decision.fromModel) "brain/local-model" else "brain/rules",
+                args = mapOf("action" to decision.action.name, "query" to decision.query.take(120)),
+                observation = briefing.prompt().take(400)
+            )
+            outcome = outcome.copy(steps = listOf(brainStep) + outcome.steps.mapIndexed { i, s -> s.copy(index = i + 1) })
             val transcript = Markdown.answer(question, outcome.answer, outcome.steps, System.currentTimeMillis())
             val file = store.writeLog("qa-${store.stamp()}", transcript)
             repos.audit("agent", "qa.answer", outcome.answer.intent, "refused=${outcome.answer.refused} md=${file.name}")
@@ -664,6 +760,7 @@ class AppViewModel(
         }) { outcome ->
             lastAnswer = outcome.answer
             steps = outcome.steps
+            growth = Growth.report(repos.knowledgeAll(800), tools.goalsNow(), System.currentTimeMillis())
             qaHistory = (listOf(question to outcome.answer) + qaHistory).take(20)
             refreshSecondary()
         }
@@ -674,6 +771,7 @@ class AppViewModel(
             val plan = tools.researchPlan()
             val progress = tools.planProgress()
             val cases = repos.casesAll()
+            val goalsNow = tools.goalsNow()
             Secondary(
                 memory = repos.memoryAll(300),
                 events = repos.events(200),
@@ -685,11 +783,14 @@ class AppViewModel(
                 planGoal = plan.goal,
                 caseSummary = ir.aai.hushyar.domain.CaseStore.summary(cases, System.currentTimeMillis()),
                 caseCount = cases.size,
-                goals = tools.goalsNow(),
+                goals = goalsNow,
                 probes = tools.lastProbe(),
                 engineCount = ir.aai.hushyar.domain.Engines.all.size
             )
-        }) { apply(it) }
+        }) {
+            growth = Growth.report(it.knowledge, it.goals, System.currentTimeMillis())
+            apply(it)
+        }
     }
 
     private data class Secondary(

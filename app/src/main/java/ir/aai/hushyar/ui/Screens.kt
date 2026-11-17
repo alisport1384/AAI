@@ -1019,6 +1019,47 @@ fun AskScreen(vm: AppViewModel) {
             }
         }
 
+        // v0.9: who decided, and what the app had to work with when it decided.
+        vm.lastDecision?.let { d ->
+            Card(
+                Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        "هستهٔ هوش: " + (if (d.fromModel) "مدل محلی" else "قاعدهٔ قطعی") +
+                            " — " + d.action.fa,
+                        style = MaterialTheme.typography.titleSmall
+                    )
+                    Text(d.reason, style = MaterialTheme.typography.bodySmall)
+                    if (d.query.isNotBlank()) {
+                        Text("عبارت پیشنهادی مدل: ${d.query}", style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+            }
+        }
+        if (vm.growth.facts > 0 || vm.growth.goals.isNotEmpty()) {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("رشد دانش اپ", style = MaterialTheme.typography.titleSmall)
+                    Text(vm.growth.summary(), style = MaterialTheme.typography.bodySmall)
+                    vm.growth.goals.forEach { goal ->
+                        Text(
+                            "هدف «${goal.goal.take(40)}»: ${goal.covered} نکته — پوشش " +
+                                "${(goal.coverage * 100).toInt()}٪",
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    }
+                    Text(
+                        "وزن‌های مدل تغییر نمی‌کند؛ چیزی که رشد می‌کند همان انبار دانشی است که مدل " +
+                            "می‌خواند — و همان چیزی که از جستجو یاد گرفته شده باقی می‌ماند.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
         answer?.let { a ->
             Card(
                 Modifier.fillMaxWidth(),
