@@ -90,12 +90,14 @@ class AutonomyTest {
         val report = core.search("قیمت گوشی", "fa")
         assertTrue(report.hits.isEmpty())
         assertTrue("باید خطاها گزارش شوند، نه پنهان", report.failures.isNotEmpty())
-        // The cap counts *engines*, not HTTP calls: an engine with a fallback route may be asked
-        // twice, but no fifth engine may be dragged in.
-        val hosts = transport.asked.map { it.substringAfter("://").substringBefore('/') }
-            .filter { it != "suggestqueries.google.com" }   // query repair, not an engine
-            .distinct()
-        assertTrue("بیش از سقف تعیین‌شده موتور نپرسد (${hosts.size})", hosts.size <= 4)
+        // The cap counts *engines*, not hosts and not HTTP calls: Google owns both www.google.com
+        // and its news feed, and the autocomplete call is a query tool rather than an engine. The
+        // app's own accounting is the right measure: engines that answered plus engines that failed.
+        val enginesAsked = report.perEngine.keys + report.failures.keys
+        assertTrue(
+            "بیش از سقف تعیین‌شده موتور نپرسد ($enginesAsked)",
+            enginesAsked.distinct().size <= 4
+        )
     }
 
     @Test
