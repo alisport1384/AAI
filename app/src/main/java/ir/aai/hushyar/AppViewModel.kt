@@ -203,6 +203,7 @@ class AppViewModel(
         private set
     var sweeping by mutableStateOf(false)
         private set
+    @Suppress("PropertyName")
     var logging by mutableStateOf(false)
         private set
     var logLines by mutableStateOf<List<ir.aai.hushyar.domain.AuditEntry>>(emptyList())
@@ -316,7 +317,7 @@ class AppViewModel(
         }
     }
 
-    fun setLogging(on: Boolean) {
+    fun toggleLogging(on: Boolean) {
         repos.setLogging(on)
         logging = on
         logLines = if (on) runCatching { repos.audits(120) }.getOrDefault(emptyList()) else emptyList()

@@ -192,7 +192,7 @@ fun BackendScreen(vm: AppViewModel) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            Switch(checked = vm.logging, onCheckedChange = { vm.setLogging(it) })
+            Switch(checked = vm.logging, onCheckedChange = { vm.toggleLogging(it) })
         }
         if (vm.logging) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
