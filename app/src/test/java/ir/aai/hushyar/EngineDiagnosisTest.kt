@@ -37,45 +37,71 @@ class EngineDiagnosisTest {
     // ---------------------------------------------------------------- the shipped artifact
 
     @Test
-    fun thePinnedAlignmentMatchesTheLibraryWeActuallyShip() {
-        val file = File("src/main/jniLibs/arm64-v8a/libhushyar_llama.so")
-        assertTrue("the committed .so must exist at ${file.absolutePath}", file.isFile)
-        val align = Elf.maxLoadAlign(file.readBytes())
-        assertEquals(
-            "EngineDiagnosis.SHIPPED_LIB_ALIGN must describe the real file",
-            EngineDiagnosis.SHIPPED_LIB_ALIGN,
-            align
-        )
-        assertEquals("the shipped library is a 4 KB-page build", 4096L, align)
+    fun thePinnedAlignmentMatchesEveryLibraryWeActuallyShip() {
+        EngineDiagnosis.SHIPPED_ABIS.forEach { abi ->
+            val file = File("src/main/jniLibs/$abi/libhushyar_llama.so")
+            assertTrue("the committed .so must exist at ${file.absolutePath}", file.isFile)
+            assertEquals(
+                "SHIPPED_LIB_ALIGN[$abi] must describe the real file",
+                EngineDiagnosis.SHIPPED_LIB_ALIGN[abi],
+                Elf.maxLoadAlign(file.readBytes())
+            )
+        }
     }
 
     @Test
-    fun theX8664LibraryHasTheSameAlignment() {
-        val file = File("src/main/jniLibs/x86_64/libhushyar_llama.so")
-        assertEquals(EngineDiagnosis.SHIPPED_LIB_ALIGN, Elf.maxLoadAlign(file.readBytes()))
+    fun theSixtyFourBitLibrariesAreLinkedForSixteenKilobytePages() {
+        // Android 15+ phones with 16 KB pages cannot dlopen a 4 KB-aligned library at all.
+        listOf("arm64-v8a", "x86_64").forEach { abi ->
+            val align = Elf.maxLoadAlign(File("src/main/jniLibs/$abi/libhushyar_llama.so").readBytes())
+            assertEquals("$abi must be a 16 KB-page build", 16_384L, align)
+        }
     }
 
     @Test
-    fun theElfReaderSeesBothLibrariesAsArmAndX86_64() {
+    fun theElfReaderSeesAllThreeLibraries() {
+        val arm32 = Elf.headers(File("src/main/jniLibs/armeabi-v7a/libhushyar_llama.so").readBytes())!!
         val arm = Elf.headers(File("src/main/jniLibs/arm64-v8a/libhushyar_llama.so").readBytes())!!
         val x86 = Elf.headers(File("src/main/jniLibs/x86_64/libhushyar_llama.so").readBytes())!!
+        assertFalse("armeabi-v7a is a 32-bit ELF", arm32.is64)
         assertTrue(arm.is64 && x86.is64)
+        assertEquals(40, arm32.machine)  // EM_ARM
         assertEquals(183, arm.machine)   // EM_AARCH64
         assertEquals(62, x86.machine)    // EM_X86_64
     }
 
     @Test
-    fun aSixteenKilobyteBuildIsReportedAsSixteenKilobytes() {
-        // Same header as a real file, with every PT_LOAD alignment rewritten to 16 KB.
+    fun aThirtyTwoBitArmPhoneIsNowSupported() {
+        // The C1 report: "couldn't find libhushyar_llama.so" on a phone whose processes run
+        // armeabi-v7a. Shipping that ABI is the fix, so the verdict must stop blaming the device.
+        val verdict = EngineDiagnosis.verdict(
+            facts(abis = listOf("armeabi-v7a", "armeabi"), page = 4096, align = 4096, failure = null)
+        )
+        assertEquals(EngineDiagnosis.Verdict.OK, verdict)
+        assertTrue(EngineDiagnosis.SHIPPED_ABIS.contains("armeabi-v7a"))
+    }
+
+    @Test
+    fun aThirtyTwoBitPhoneWhoseLibraryIsMissingStillGetsTheGapNamed() {
+        val verdict = EngineDiagnosis.verdict(
+            facts(abis = listOf("armeabi-v7a"), page = 4096, align = 4096, present = false)
+        )
+        assertEquals(EngineDiagnosis.Verdict.LIBRARY_MISSING, verdict)
+    }
+
+    @Test
+    fun whateverAlignmentTheFileDeclaresIsWhatGetsReported() {
+        // The real 64-bit file, with every PT_LOAD alignment rewritten to a value that is neither
+        // of the two we ship, so the test proves the reader reads rather than assumes.
         val bytes = File("src/main/jniLibs/arm64-v8a/libhushyar_llama.so").readBytes()
         val phoff = readInt(bytes, 32)
         val phentsize = readShort(bytes, 54)
         val phnum = readShort(bytes, 56)
         for (i in 0 until phnum) {
             val at = phoff + i * phentsize
-            if (readInt(bytes, at) == 1) writeLong(bytes, at + 48, 16_384L)
+            if (readInt(bytes, at) == 1) writeLong(bytes, at + 48, 2048L)
         }
-        assertEquals(16_384L, Elf.maxLoadAlign(bytes))
+        assertEquals(2048L, Elf.maxLoadAlign(bytes))
     }
 
     @Test
@@ -92,9 +118,9 @@ class EngineDiagnosisTest {
     }
 
     @Test
-    fun aThirtyTwoBitPhoneIsNamedAsAnUnsupportedArchitecture() {
+    fun anArchitectureWeDoNotShipIsNamedAsUnsupported() {
         val verdict = EngineDiagnosis.verdict(
-            facts(abis = listOf("armeabi-v7a", "armeabi"), failure = "dlopen failed: library \"libhushyar_llama.so\" not found")
+            facts(abis = listOf("x86", "mips"), failure = "dlopen failed: library \"libhushyar_llama.so\" not found")
         )
         assertEquals(EngineDiagnosis.Verdict.WRONG_ABI, verdict)
         assertTrue(EngineDiagnosis.advice(verdict).contains("معماری"))
@@ -111,12 +137,20 @@ class EngineDiagnosisTest {
     }
 
     @Test
-    fun aThirtyTwoBitPhoneIsNotBlamedOnPageSize() {
+    fun anUnsupportedArchitectureIsNotBlamedOnPageSize() {
         // A 16 KB phone whose ABI we do not ship must not be reported as a page-size problem.
         val verdict = EngineDiagnosis.verdict(
-            facts(abis = listOf("armeabi-v7a"), page = 16_384, align = 4096)
+            facts(abis = listOf("x86"), page = 16_384, align = 4096)
         )
         assertEquals(EngineDiagnosis.Verdict.WRONG_ABI, verdict)
+    }
+
+    @Test
+    fun aSixteenKilobytePhoneWithOurNewLibraryIsNoLongerAPageSizeProblem() {
+        val verdict = EngineDiagnosis.verdict(
+            facts(abis = listOf("arm64-v8a"), page = 16_384, align = 16_384, failure = null)
+        )
+        assertEquals(EngineDiagnosis.Verdict.OK, verdict)
     }
 
     @Test

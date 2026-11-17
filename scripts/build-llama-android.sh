@@ -6,12 +6,17 @@
 #   LLAMA_VERSION=v1.0.0            (pinned upstream tag)
 #   ANDROID_NDK_HOME=/path/to/ndk   (r27+)
 #   CMAKE=/path/to/cmake            (3.22+)
+#   ABIS="arm64-v8a armeabi-v7a x86_64"  (default: all three shipped ABIs)
+#
+# 16 KB pages: NDK r27 can link every ABI with 16 KB alignment
+# (-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON). Android 15+ devices with 16 KB memory
+# pages cannot load a 4 KB-aligned library at all, so this is on by default.
 #
 # Usage: bash scripts/build-llama-android.sh
 set -euo pipefail
 
 LLAMA_VERSION="${LLAMA_VERSION:-v1.0.0}"
-ABIS="${ABIS:-arm64-v8a x86_64}"
+ABIS="${ABIS:-arm64-v8a armeabi-v7a x86_64}"
 MIN_SDK="${MIN_SDK:-26}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -39,9 +44,10 @@ for abi in $ABIS; do
     -DANDROID_ABI="$abi" \
     -DANDROID_PLATFORM="android-$MIN_SDK" \
     -DANDROID_STL=c++_static \
+    -DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON \
     -DCMAKE_BUILD_TYPE=Release \
     -DLLAMA_CPP_DIR="$SRC" > "$build.configure.log" 2>&1 || { tail -30 "$build.configure.log"; exit 1; }
-  cmake --build "$build" --target hushyar_llama -j"$(nproc)" > "$build.build.log" 2>&1 \
+  "$CMAKE" --build "$build" --target hushyar_llama -j"$(nproc)" > "$build.build.log" 2>&1 \
     || { echo "build failed; see $build.build.log" >&2; grep -iE "error:|FAILED" "$build.build.log" | head -20 >&2; exit 1; }
   mkdir -p "$OUT/$abi"
   cp "$build/libhushyar_llama.so" "$OUT/$abi/"

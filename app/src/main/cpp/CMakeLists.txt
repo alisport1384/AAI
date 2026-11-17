@@ -25,6 +25,15 @@ set(LLAMA_CURL            OFF CACHE BOOL "" FORCE)
 set(GGML_OPENMP           OFF CACHE BOOL "" FORCE)
 set(GGML_NATIVE           OFF CACHE BOOL "" FORCE)
 
+# llama.cpp v1.0.0 compiles its llamafile sgemm kernels for every arch, but the 32-bit ARM path
+# uses NEON FP16 intrinsics (vld1q_f16) without the __ARM_FEATURE_FP16 guard — upstream FIXME at
+# ggml-cpu/llamafile/sgemm.cpp:309 — so an armeabi-v7a build dies with "use of undeclared
+# identifier 'vld1q_f16'". Turning the llamafile kernels off for 32-bit ARM only leaves ggml's own
+# ARM kernels in place and costs nothing on 64-bit builds.
+if(ANDROID_ABI STREQUAL "armeabi-v7a")
+    set(GGML_LLAMAFILE OFF CACHE BOOL "" FORCE)
+endif()
+
 add_subdirectory(${LLAMA_CPP_DIR} ${CMAKE_BINARY_DIR}/llama.cpp EXCLUDE_FROM_ALL)
 
 add_library(hushyar_llama SHARED llama_jni.cpp)

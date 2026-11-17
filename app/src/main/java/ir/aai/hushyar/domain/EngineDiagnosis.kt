@@ -14,16 +14,25 @@ package ir.aai.hushyar.domain
 object EngineDiagnosis {
 
     /** The ABIs this build actually ships. Must match `app/src/main/jniLibs/`. */
-    val SHIPPED_ABIS = listOf("arm64-v8a", "x86_64")
+    val SHIPPED_ABIS = listOf("arm64-v8a", "armeabi-v7a", "x86_64")
 
     /**
-     * Largest `PT_LOAD` alignment of the committed `libhushyar_llama.so`.
+     * Page alignment of each committed `libhushyar_llama.so`, per ABI.
      *
-     * Measured, not guessed: `readelf -l` on the file in `jniLibs/` reports 0x1000. The unit test
-     * `EngineDiagnosisTest` re-reads the real file and fails if this constant ever drifts, so a
-     * future relink cannot silently leave the diagnosis lying.
+     * Measured, never guessed: the unit test `EngineDiagnosisTest` reads the real files in
+     * `jniLibs/` and fails if these numbers drift, so a future relink cannot leave the diagnosis
+     * lying. Kept per ABI because the three libraries are separate builds and may be relinked at
+     * different times — a phone must be judged against *its own* library.
      */
-    const val SHIPPED_LIB_ALIGN: Long = 4096L
+    val SHIPPED_LIB_ALIGN: Map<String, Long> = mapOf(
+        "arm64-v8a" to 16_384L,   // linked with -DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON
+        "armeabi-v7a" to 4096L,   // 32-bit devices use 4 KB pages; 16 KB devices are arm64-only
+        "x86_64" to 16_384L
+    )
+
+    /** The alignment a phone will actually meet: the first shipped ABI it supports. */
+    fun alignFor(abis: List<String>): Long? =
+        abis.firstNotNullOfOrNull { abi -> SHIPPED_LIB_ALIGN[abi] }
 
     /** The loader says "not found" for a missing `.so`; everything else means it was there and failed. */
     fun libraryMissingFromError(error: String?): Boolean {
@@ -41,8 +50,8 @@ object EngineDiagnosis {
         val pageSizeBytes: Long,
         val apiLevel: Int,
         val deviceModel: String,
-        /** Largest `PT_LOAD` alignment inside the shipped `.so`; null when it could not be read. */
-        val libAlign: Long? = SHIPPED_LIB_ALIGN,
+        /** Largest `PT_LOAD` alignment inside the `.so` this phone would load; null if unknown. */
+        val libAlign: Long? = alignFor(abis),
         /** Whether the library file exists in the installed APK's native library directory. */
         val libPresent: Boolean = true
     ) {
@@ -67,11 +76,16 @@ object EngineDiagnosis {
         UNKNOWN
     }
 
+    /**
+     * Order matters. An unsupported ABI and a stripped APK both end in the loader saying
+     * "couldn't find libhushyar_llama.so", but only one of them is fixed by re-downloading the
+     * APK — so the architecture is judged first.
+     */
     fun verdict(facts: Facts): Verdict = when {
         facts.engineLoaded -> Verdict.OK
-        !facts.libPresent -> Verdict.LIBRARY_MISSING
-        facts.abis.none { it in SHIPPED_ABIS } -> Verdict.WRONG_ABI
+        facts.abis.isNotEmpty() && facts.abis.none { it in SHIPPED_ABIS } -> Verdict.WRONG_ABI
         facts.pageSizeBytes > 0 && facts.libAlign != null && facts.pageSizeBytes > facts.libAlign -> Verdict.PAGE_SIZE
+        !facts.libPresent -> Verdict.LIBRARY_MISSING
         else -> Verdict.UNKNOWN
     }
 
@@ -81,7 +95,8 @@ object EngineDiagnosis {
         Verdict.WRONG_ABI ->
             "این گوشی با معماری‌ای کار می‌کند که باینری ما برایش ساخته نشده. مدل روی این دستگاه " +
                 "اجرا نمی‌شود تا نسخه‌ای برای این معماری ساخته شود؛ بقیهٔ هوش اپ (جستجو، یادگیری، " +
-                "لایه‌بندی، پاسخ از شاهد) بدون مدل کامل کار می‌کند."
+                "لایه‌بندی، پاسخ از شاهد) بدون مدل کامل کار می‌کند. نسخه‌ای که armeabi-v7a را هم " +
+                "دارد باید جداگانه نصب شود."
         Verdict.PAGE_SIZE ->
             "گوشی از صفحه‌بندی ۱۶ کیلوبایتی استفاده می‌کند و کتابخانه با تراز ۴ کیلوبایت لینک شده " +
                 "است. این با تغییر تنظیمات اپ درست نمی‌شود؛ کتابخانه باید دوباره و با تراز صفحهٔ " +

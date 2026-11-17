@@ -222,7 +222,7 @@ class AppViewModel(
                 }.getOrDefault(0L),
                 apiLevel = android.os.Build.VERSION.SDK_INT,
                 deviceModel = (android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL).trim(),
-                libAlign = EngineDiagnosis.SHIPPED_LIB_ALIGN,
+                libAlign = EngineDiagnosis.alignFor(android.os.Build.SUPPORTED_ABIS?.toList().orEmpty()),
                 libPresent = !EngineDiagnosis.libraryMissingFromError(failure)
             )
         }.getOrNull()
