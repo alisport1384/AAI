@@ -298,10 +298,44 @@ object KnowledgeBank {
     }
 
     /** Fresh, relevant items for a question, best first. */
+    /**
+     * v0.11.1 — «قیمت» موضوع نیست.
+     *
+     * باگ گزارش‌شده: پرسش «قیمت تی‌شرت» و بعد «قیمت شلوار». هر دو با «قیمت» شروع می‌شوند، واژهٔ
+     * مشترک «قیمت» امتیاز ارتباط را بالا می‌برد و برنامه پرسش دوم را «همان پرسش» می‌دید: بدون
+     * جستجو، از دانش پرسش اول جواب می‌داد. راه‌حل: واژه‌های پرسشی (قیمت، نرخ، وزن…) از «موضوع»
+     * جدا می‌شوند و اگر دانش ذخیره‌شده **هیچ‌یک** از واژه‌های موضوع را نداشته باشد، ربط صفر است.
+     */
+    val ASK_WORDS: Set<String> = setOf(
+        "قیمت", "قیمتی", "قیمتش", "نرخ", "بها", "چقدر", "چند", "چنده", "چندین",
+        "وزن", "وزنش", "سایز", "اندازه", "موجودی", "جنس", "جنسش", "مدل",
+        "چیه", "چیست", "چی", "هست", "است", "تومان", "تومن", "ریال", "درصد",
+        "price", "cost", "costs", "weight", "size", "stock", "how", "much", "many", "what"
+    )
+
+    /** واژه‌های موضوع: آنچه پرسش *دربارهٔ* آن است، بدون واژه‌های پرسشی. */
+    fun subjectTokensOf(question: String): Set<String> =
+        Text.contentTokens(question).filter { it !in ASK_WORDS }.toSet()
+
+    /**
+     * آیا این دانش اصلاً دربارهٔ موضوعِ پرسش است؟ اشتراک تنها در واژه‌های پرسشی، اشتراک نیست.
+     * مقایسه با پیشوند برای واژه‌های بلند («شلوار»/«شلوارک»)، مثل بقیهٔ بخش‌های برنامه.
+     */
+    fun mentionsSubject(question: String, item: KnowledgeItem): Boolean {
+        val subject = subjectTokensOf(question)
+        if (subject.isEmpty()) return true
+        val hay = Text.contentTokens("${item.topic} ${item.claim} ${item.question}").toSet()
+        return subject.any { token -> hay.any { word -> sameWord(token, word) } }
+    }
+
+    /** پسوندی/پیشوندی برای واژه‌های چهارحرفی و بلندتر؛ کوتاه‌ترها باید دقیق برابر باشند. */
+    fun sameWord(a: String, b: String): Boolean =
+        a == b || (a.length >= 4 && b.length >= 4 && (a.startsWith(b) || b.startsWith(a)))
+
     fun answerable(question: String, items: List<KnowledgeItem>, now: Long, limit: Int = 4): List<KnowledgeItem> {
         val key = topicKey(question)
         val queryTokens = Text.contentTokens(question).toSet()
-        return items.filter { it.fresh && !isStale(it, now) }
+        return items.filter { it.fresh && !isStale(it, now) && mentionsSubject(question, it) }
             .map { item ->
                 val topicMatch = if (item.topic == key) 1.0 else Similarity.containment(Text.contentTokens(item.topic).toSet(), queryTokens) * 0.8
                 val claimRelevance = Similarity.containment(queryTokens, Text.contentTokens(item.claim).toSet())
@@ -322,16 +356,20 @@ object KnowledgeBank {
      */
     fun coverage(question: String, items: List<KnowledgeItem>, now: Long, pack: MarketPack?): Double {
         if (items.isEmpty()) return 0.0
+        // دانشی که موضوع پرسش را نام نمی‌برد، «پوشش» نیست؛ وگرنه واژهٔ مشترک «قیمت» پرسش دوم را
+        // بی‌جستجو جواب می‌داد.
+        val relevant = items.filter { mentionsSubject(question, it) }
+        if (relevant.isEmpty()) return 0.0
         val queryTokens = Text.contentTokens(question).toSet()
-        val relevance = items.maxOf { Similarity.containment(queryTokens, Text.contentTokens(it.claim).toSet()) }
+        val relevance = relevant.maxOf { Similarity.containment(queryTokens, Text.contentTokens(it.claim).toSet()) }
             .coerceIn(0.0, 1.0)
         val needsNumber = needsNumeric(question, pack)
-        val numericSlot = if (!needsNumber) 1.0 else if (items.any { it.numericValue != null }) 1.0 else 0.0
-        val domains = items.map { it.domain }.filter { it.isNotBlank() }.distinct().size
+        val numericSlot = if (!needsNumber) 1.0 else if (relevant.any { it.numericValue != null }) 1.0 else 0.0
+        val domains = relevant.map { it.domain }.filter { it.isNotBlank() }.distinct().size
         val diversity = (domains / 2.0).coerceAtMost(1.0)
         val mentioned = mentionedAttributes(question, pack)
         val attributeSlot = if (mentioned.isEmpty()) 1.0 else mentioned.count { id ->
-            items.any { it.attribute == id }
+            relevant.any { it.attribute == id }
         }.toDouble() / mentioned.size
         return 0.45 * relevance + 0.20 * numericSlot + 0.20 * diversity + 0.15 * attributeSlot
     }

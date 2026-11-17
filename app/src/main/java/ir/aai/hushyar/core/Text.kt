@@ -48,7 +48,45 @@ object Text {
         s = asciiDigits(sb.toString())
         s = s.lowercase()
         s = s.replace('\u0653', ' ').replace('\u0654', ' ')
-        return s.replace(Regex("\\s+"), " ").trim()
+        // پیش از یکسان‌سازی فاصله‌ها، چون فاصلهٔ دوگانه مرز کلمه در نوشتارِ کلمه‌به‌کلمه است.
+        return repair(s).replace(Regex("\\s+"), " ").trim()
+    }
+
+    /**
+     * v0.11.1 — «ق ی م ت  ت ی ش ر ت» هم یک پرسش است.
+     *
+     * کاربر گزارش داد وقتی جمله کلمه‌به‌کلمه با فاصله نوشته می‌شود، هوش آن را نمی‌فهمد. سه شکل رایج
+     * اینجا درست می‌شوند:
+     *
+     *  * **حرف‌به‌حرف**: «ق ی م ت» → «قیمت» (سه حرف یا بیشترِ تک‌حرفی پشت سر هم)
+     *  * **با جداکننده**: «ق.ی.م.ت» / «ق-ی-م-ت» / «ق_ی_م_ت» → «قیمت»
+     *  * **کلمه‌به‌کلمه**: «قیمت  ت ی ش ر ت  ن خ ی» → «قیمت تیشرت نخی» (فاصلهٔ دو یا بیشتر،
+     *    تب یا خط جدید = مرز دو کلمه)
+     *
+     * قاعده‌ها محافظه‌کارانه‌اند: حرف «و» عطف هیچ‌وقت جزو دستهٔ تک‌حرفی شمرده نمی‌شود، و دسته‌ای
+     * که بیشتر از ۱۲ حرف شود (یعنی تقریباً مطمئناً چند کلمه بوده) به حال خودش می‌ماند تا کلمه‌ها
+     * به هم نچسبند.
+     */
+    fun repair(input: String): String {
+        if (input.isEmpty()) return input
+        // ۱) جداکننده‌های نقطه‌ای و خط‌تیره: ق.ی.م.ت → قیمت
+        var s = Regex("(?:\\p{L}\\s*[._\\-]\\s*){2,}\\p{L}").replace(input) { m ->
+            val letters = m.value.filter { it.isLetter() }
+            if (letters.length in 3..12) letters else m.value
+        }
+        // ۲) مرزهای سخت کلمه: تب/خط جدید یا دو فاصلهٔ پشت سر هم
+        val segments = s.split(Regex("[\\t\\n\\r]+| {2,}"))
+        val fixed = segments.map { segment ->
+            val words = segment.trim().split(' ').filter { it.isNotEmpty() }
+            val singles = words.count { it.length == 1 && it[0].isLetter() && it[0] != 'و' }
+            when {
+                words.size >= 3 && singles == words.size &&
+                    words.joinToString("").length <= 12 -> words.joinToString("")
+                else -> segment.trim()
+            }
+        }
+        s = fixed.filter { it.isNotEmpty() }.joinToString(" ")
+        return s
     }
 
     private val TOKEN_SEP = Regex("[^\\p{L}\\p{N}]+")

@@ -66,6 +66,14 @@ object CaseStore {
             .filter { it.ask == ask }
             .filter { it.fresh(now) }
             .filter { AnswerShapes.answers(model, it.answer, pack) }
+            // v0.11.1: پرونده‌ای که موضوعِ این پرسش را نام نمی‌برد، پروندهٔ این پرسش نیست؛ سهیم‌بودن
+            // در واژهٔ «قیمت» دلیل کافی نیست.
+            .filter { case ->
+                KnowledgeBank.subjectTokensOf(question).let { subject ->
+                    subject.isEmpty() || Text.contentTokens("${case.question} ${case.topicKey}")
+                        .any { word -> subject.any { token -> KnowledgeBank.sameWord(token, word) } }
+                }
+            }
             .filter { it.topicKey == topic || Similarity.containment(
                 Text.contentTokens(it.topicKey).toSet(),
                 Text.contentTokens(topic).toSet()
