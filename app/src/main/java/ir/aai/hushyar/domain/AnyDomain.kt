@@ -80,6 +80,8 @@ object Units {
         val a = byId[from] ?: return null
         val b = byId[to] ?: return null
         if (a.dim != b.dim) return null
+        // «بسته» و «کارتن» اندازهٔ استاندارد ندارند؛ تبدیلشان فقط با دانشِ آموخته‌شده انجام می‌شود.
+        if (a.learnedSize || b.learnedSize) return null
         return value * a.toBase / b.toBase
     }
 
@@ -160,6 +162,9 @@ object FrameParser {
     private val DEF_WORDS = listOf("چیه", "چیست", "یعنی چی", "یعنی چه", "چی هست", "تعریف", "what is")
 
     private val BASIS_RE = Regex("هر\\s*(کیلوگرم|کیلو|متر|مترمربع|عدد|دانه|دوجین|بسته|کارتن|تن|گرم)")
+
+    /** یکاهای شمارشی‌ای که آمدنشان در پرسش، پایهٔ قیمت را می‌سازد. */
+    private val COUNTING_UNITS = listOf("دوجین", "بسته", "کارتن", "جفت")
     private val SIZE_TOKENS = listOf("xxl", "xl", "xs", "s", "m", "l", "3xl", "2xl")
 
     /**
@@ -259,7 +264,10 @@ object FrameParser {
         }
 
         val basisMatch = BASIS_RE.find(norm)
-        val basis = basisMatch?.let { Units.byAlias(it.groupValues[1])?.id }
+        // «قیمت تی‌شرت دوجین» هم پایه دارد: یکای شمارشیِ ایستاده، بدون «هر».
+        val looseBasis = COUNTING_UNITS.firstOrNull { word -> norm.contains(word) }
+            ?.let { Units.byAlias(it)?.id }
+        val basis = basisMatch?.let { Units.byAlias(it.groupValues[1])?.id } ?: looseBasis
         val quantity = quantityOf(norm)
 
         val lines = mutableListOf<String>()

@@ -84,7 +84,6 @@ class AnyDomainTest {
         val now = 1_700_000_000_000L
         val fact = DomainFact(entity = "tshirt", attribute = "price", value = 180_000.0, unit = "toman", per = "count", at = now)
         val item = Facts.toItem(fact, now)
-        assertEquals("fact_ price", "fact_price")
         assertEquals("fact:tshirt|price", item.topic)
         assertEquals("fact_price", item.attribute)
         val back = Facts.from(item)!!

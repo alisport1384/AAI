@@ -292,8 +292,9 @@ object Rates {
         val fromCount = countFactor(from, packSize)
         val toCount = countFactor(to, packSize)
         if (fromCount != null && toCount != null) {
-            val result = value * fromCount / toCount
-            return result to "${SteelMath.money(value)} × ${Materials.num(fromCount)} ÷ ${Materials.num(toCount)}"
+            // «قیمت هر عدد ۱۸۰٬۰۰۰» یعنی «قیمت دوجین = ۱۸۰٬۰۰۰ × ۱۲»؛ صورت و مخرج برحسب «عدد» است.
+            val result = value * toCount / fromCount
+            return result to "${SteelMath.money(value)} × ${Materials.num(toCount)} ÷ ${Materials.num(fromCount)}"
         }
         // جرم: کیلو ↔ تن
         val mass = Units.convert(value, from, to)
@@ -429,9 +430,12 @@ object FactExtractor {
             for (line in reply.lineSequence()) {
                 val parsed = parseFactLine(line) ?: continue
                 // بازبینی: عدد باید در متن منبع باشد
-                val digits = Materials.persian(Text.asciiDigits(parsed.second.toString()))
-                val ascii = Text.asciiDigits(parsed.second.toString())
-                if (!snippet.contains(digits) && !snippet.contains(ascii)) continue
+                val ascii = if (parsed.second == Math.floor(parsed.second) && !parsed.second.isInfinite()) {
+                    parsed.second.toLong().toString()
+                } else {
+                    parsed.second.toString()
+                }
+                if (!snippet.contains(ascii) && !snippet.contains(Materials.persian(ascii))) continue
                 val unit = Units.byAlias(parsed.third) ?: continue
                 if (unit.dim == Dim.MONEY) {
                     out += 0.75 to DomainFact(
