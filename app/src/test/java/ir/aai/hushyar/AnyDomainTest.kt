@@ -7,7 +7,7 @@ import ir.aai.hushyar.domain.AnyDomainBrain
 import ir.aai.hushyar.domain.Ask
 import ir.aai.hushyar.domain.DomainPacks
 import ir.aai.hushyar.domain.Engines
-import ir.aai.hushyar.domain.Fact
+import ir.aai.hushyar.domain.DomainFact
 import ir.aai.hushyar.domain.FactExtractor
 import ir.aai.hushyar.domain.Facts
 import ir.aai.hushyar.domain.FrameParser
@@ -82,7 +82,7 @@ class AnyDomainTest {
     @Test
     fun aFactSurvivesTheRoundTripThroughTheKnowledgeStore() {
         val now = 1_700_000_000_000L
-        val fact = Fact(entity = "tshirt", attribute = "price", value = 180_000.0, unit = "toman", per = "count", at = now)
+        val fact = DomainFact(entity = "tshirt", attribute = "price", value = 180_000.0, unit = "toman", per = "count", at = now)
         val item = Facts.toItem(fact, now)
         assertEquals("fact_ price", "fact_price")
         assertEquals("fact:tshirt|price", item.topic)
@@ -107,14 +107,14 @@ class AnyDomainTest {
     @Test
     fun aPackPriceNeedsTheLearnedPackSize() {
         assertNull("بدون دانستن تعداد بسته، تبدیل حدس زده نمی‌شود", Rates.convert(500_000.0, "pack", "count", null, null))
-        val packSize = Fact(entity = "tshirt", attribute = "pack_size", value = 5.0, unit = "count")
+        val packSize = DomainFact(entity = "tshirt", attribute = "pack_size", value = 5.0, unit = "count")
         val (value, _) = Rates.convert(500_000.0, "pack", "count", null, packSize)!!
         assertEquals(100_000.0, value, 0.5)
     }
 
     @Test
     fun aWeightFactBridgesPieceAndKilogram() {
-        val weight = Fact(entity = "tshirt", attribute = "weight", value = 0.2, unit = "kg")
+        val weight = DomainFact(entity = "tshirt", attribute = "weight", value = 0.2, unit = "kg")
         val (perKg, _) = Rates.convert(180_000.0, "count", "kg", weight, null)!!
         assertEquals(900_000.0, perKg, 1.0)
     }

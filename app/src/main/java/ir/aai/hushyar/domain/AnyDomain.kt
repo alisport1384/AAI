@@ -307,7 +307,7 @@ object FrameParser {
 
 // ---------------------------------------------------------------------------- دانش نوع‌دار
 
-data class Fact(
+data class DomainFact(
     val entity: String,
     val attribute: String,
     val qualifier: String = "",
@@ -335,7 +335,7 @@ object Facts {
 
     fun topic(entity: String, attribute: String): String = "$PREFIX$entity|$attribute"
 
-    fun toItem(fact: Fact, now: Long): KnowledgeItem {
+    fun toItem(fact: DomainFact, now: Long): KnowledgeItem {
         val claim = buildString {
             append(entityLabel(fact.entity)).append(" — ").append(fact.attributeLabel()).append(": ")
             append(fact.label())
@@ -360,13 +360,14 @@ object Facts {
         )
     }
 
-    fun from(item: KnowledgeItem): Fact? {
-        if (!item.attribute.startsWith(ATTRIBUTE_PREFIX)) return null
+    fun from(item: KnowledgeItem): DomainFact? {
+        val attribute = item.attribute ?: return null
+        if (!attribute.startsWith(ATTRIBUTE_PREFIX)) return null
         val v = item.numericValue ?: return null
         val unitParts = (item.unit ?: "").split("/")
-        return Fact(
+        return DomainFact(
             entity = item.topic.removePrefix(PREFIX).substringBefore('|'),
-            attribute = item.attribute.removePrefix(ATTRIBUTE_PREFIX),
+            attribute = attribute.removePrefix(ATTRIBUTE_PREFIX),
             qualifier = item.question,
             value = v,
             unit = unitParts.firstOrNull().orEmpty(),
@@ -379,13 +380,13 @@ object Facts {
         )
     }
 
-    fun find(tools: AgentTools, entity: String, attribute: String): List<Fact> =
+    fun find(tools: AgentTools, entity: String, attribute: String): List<DomainFact> =
         tools.knowledgeAll(600)
             .filter { it.attribute == ATTRIBUTE_PREFIX + attribute && it.topic == topic(entity, attribute) }
             .mapNotNull { from(it) }
             .sortedByDescending { it.at }
 
-    fun save(tools: AgentTools, fact: Fact, now: Long): KnowledgeResult =
+    fun save(tools: AgentTools, fact: DomainFact, now: Long): KnowledgeResult =
         tools.knowledgeStore(toItem(fact.copy(at = if (fact.at > 0) fact.at else now), now))
 
     fun entityLabel(entity: String): String = entity
@@ -400,7 +401,7 @@ object Facts {
         else -> attribute
     }
 
-    private fun Fact.attributeLabel(): String = attributeLabel(attribute)
+    private fun DomainFact.attributeLabel(): String = attributeLabel(attribute)
 }
 
 // ---------------------------------------------------------------------------- بستهٔ دانش

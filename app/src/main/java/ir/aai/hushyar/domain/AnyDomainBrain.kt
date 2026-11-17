@@ -9,7 +9,7 @@ import ir.aai.hushyar.core.Text
  * ```text
  * پرسش «قیمت تی‌شرت نخی سایز L دوجین»
  *   ├─ FrameParser  → کالا: تی‌شرت | جنس: نخ پنبه | سایز: L | خواسته: قیمت | پایه: دوجین
- *   ├─ دانش خودم    → Fact(price, 180000, toman, per=count) اگر ذخیره شده باشد
+ *   ├─ دانش خودم    → DomainFact(price, 180000, toman, per=count) اگر ذخیره شده باشد
  *   ├─ وگرنه جستجو  → استخراج (اول با کد، بعد با مدل محلی و بازبینی سخت) → ذخیره
  *   ├─ محاسبه       → ۱۸۰٬۰۰۰ × ۱۲ = ۲٬۱۶۰٬۰۰۰ تومان دوجین (فرمول چاپ می‌شود)
  *   └─ پاسخ         → «۲٬۱۶۰٬۰۰۰ تومان دوجین» + منبع + تاریخ + فرض‌ها
@@ -189,14 +189,14 @@ class AnyDomainBrain(
         frame: Frame,
         now: Long,
         stepOffset: Int
-    ): List<Pair<Double, Fact>> {
+    ): List<Pair<Double, DomainFact>> {
         val q = frame.label()
         val queries = listOf(
             "قیمت $q امروز تومان",
             "$q قیمت روز بازار",
             "$q قیمت تومان"
         )
-        val out = mutableListOf<Pair<Double, Fact>>()
+        val out = mutableListOf<Pair<Double, DomainFact>>()
         for (query in queries) {
             val report = tools.webSearch(query, "fa")
             out += FactExtractor.read(report.hits, frame, now)
@@ -224,9 +224,9 @@ class AnyDomainBrain(
      */
     private fun compose(
         frame: Frame,
-        prices: List<Fact>,
-        weight: Fact?,
-        packSize: Fact?,
+        prices: List<DomainFact>,
+        weight: DomainFact?,
+        packSize: DomainFact?,
         now: Long,
         bullets: MutableList<String>,
         citations: MutableList<Citation>
@@ -284,8 +284,8 @@ object Rates {
         value: Double,
         from: String,
         to: String,
-        weight: Fact?,
-        packSize: Fact?
+        weight: DomainFact?,
+        packSize: DomainFact?
     ): Pair<Double, String>? {
         if (from == to) return value to ""
         // شمارشی‌ها: عدد ↔ دوجین ↔ بسته
@@ -318,7 +318,7 @@ object Rates {
     }
 
     /** تعداد «عدد» در یک یکای شمارشی؛ «بسته» اندازه‌اش از دانش می‌آید نه از استاندارد. */
-    fun countFactor(unit: String, packSize: Fact?): Double? = when (unit) {
+    fun countFactor(unit: String, packSize: DomainFact?): Double? = when (unit) {
         "count" -> 1.0
         "pair" -> 2.0
         "dozen" -> 12.0
@@ -348,8 +348,8 @@ object FactExtractor {
         "مترمربع" to "m2", "متر مربع" to "m2", "متر" to "m"
     )
 
-    fun read(hits: List<WebHit>, frame: Frame, now: Long): List<Pair<Double, Fact>> {
-        val out = mutableListOf<Pair<Double, Fact>>()
+    fun read(hits: List<WebHit>, frame: Frame, now: Long): List<Pair<Double, DomainFact>> {
+        val out = mutableListOf<Pair<Double, DomainFact>>()
         for (hit in hits) {
             val text = Text.normalize("${hit.title} ${hit.snippet}")
             if (text.isBlank()) continue
@@ -371,7 +371,7 @@ object FactExtractor {
                 if (unitWord == "ریال") value /= 10.0
                 if (value < 1_000 || value > 5_000_000_000.0) continue
                 val per = basisNear(text, m.range.first, frame)
-                out += 0.7 to Fact(
+                out += 0.7 to DomainFact(
                     entity = frame.entity,
                     attribute = "price",
                     qualifier = frame.qualifierText,
@@ -393,7 +393,7 @@ object FactExtractor {
                 if (u.dim != Dim.MASS) continue
                 val value = m.groupValues[1].replace(" ", "").replace("\u066C", "").toDoubleOrNull() ?: continue
                 if (value <= 0 || value > 1_000_000) continue
-                out += 0.5 to Fact(
+                out += 0.5 to DomainFact(
                     entity = frame.entity,
                     attribute = "weight",
                     qualifier = frame.qualifierText,
@@ -418,9 +418,9 @@ object FactExtractor {
         generator: LocalGenerator?,
         spec: ModelSpec?,
         now: Long
-    ): List<Pair<Double, Fact>> {
+    ): List<Pair<Double, DomainFact>> {
         if (generator == null || !generator.ready) return emptyList()
-        val out = mutableListOf<Pair<Double, Fact>>()
+        val out = mutableListOf<Pair<Double, DomainFact>>()
         for (hit in hits.take(1)) {
             val snippet = Text.normalize("${hit.title} ${hit.snippet}").take(700)
             if (snippet.isBlank()) continue
@@ -434,14 +434,14 @@ object FactExtractor {
                 if (!snippet.contains(digits) && !snippet.contains(ascii)) continue
                 val unit = Units.byAlias(parsed.third) ?: continue
                 if (unit.dim == Dim.MONEY) {
-                    out += 0.75 to Fact(
+                    out += 0.75 to DomainFact(
                         entity = frame.entity, attribute = "price", qualifier = frame.qualifierText,
                         value = parsed.second, unit = "toman", per = frame.basis ?: "count",
                         evidence = snippet.take(160), domain = hit.url.substringAfter("://").substringBefore('/'),
                         url = hit.url, at = now, confidence = 0.75
                     )
                 } else if (unit.dim == Dim.MASS) {
-                    out += 0.6 to Fact(
+                    out += 0.6 to DomainFact(
                         entity = frame.entity, attribute = "weight", qualifier = frame.qualifierText,
                         value = Units.convert(parsed.second, unit.id, "kg") ?: parsed.second, unit = "kg",
                         evidence = snippet.take(160), domain = hit.url.substringAfter("://").substringBefore('/'),
