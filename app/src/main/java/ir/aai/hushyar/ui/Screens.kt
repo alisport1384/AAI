@@ -303,6 +303,56 @@ private fun KnowledgeTab(vm: AppViewModel) {
 
     LaunchedEffect(Unit) { vm.refreshData() }
 
+    // ---- v0.6: the goal in the user's own words, and honest engine health ----
+    SectionTitle("هدف من")
+    var goalText by remember { mutableStateOf("") }
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Body("هدف را همان‌طور که هست بنویس؛ خودش پلان می‌سازد و بدون پرسش تازه شروع می‌کند.")
+            OutlinedTextField(
+                value = goalText,
+                onValueChange = { goalText = it },
+                label = { Text("مثلاً: خرید گوشی سامسونگ زیر ۲۰ میلیون") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+            Button(
+                onClick = {
+                    vm.setGoal(goalText)
+                    goalText = ""
+                },
+                enabled = goalText.isNotBlank(),
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("ثبت هدف و شروع کاوش") }
+            if (vm.goals.isEmpty()) {
+                Body("هنوز هدفی ثبت نشده.")
+            } else {
+                vm.goals.forEach { BulletRow(it) }
+            }
+        }
+    }
+
+    SectionTitle("موتورهای جستجو (${Txt.numEn(vm.engineCount.toLong())} موتور)")
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Body("همهٔ موتورها بدون کلید و حساب، فقط HTML عمومی. اگر یکی جواب ندهد، بعدی پرسیده می‌شود؛ آزمون زیر نشان می‌دهد کدام‌ها الان جواب می‌دهند.")
+            OutlinedButton(
+                onClick = { vm.testEngines() },
+                enabled = !vm.probing,
+                modifier = Modifier.fillMaxWidth()
+            ) { Text(if (vm.probing) "در حال آزمودن…" else "همهٔ موتورها را آزمون کن") }
+            if (vm.probes.isEmpty()) {
+                Body("آزمونی انجام نشده.")
+            } else {
+                vm.probes.take(30).forEach { (id, ok, hits) ->
+                    BulletRow(
+                        if (ok) "$id — ${Txt.numEn(hits.toLong())} نتیجه" else "$id — پاسخ نداد"
+                    )
+                }
+            }
+        }
+    }
+
     // ---- v0.5: the plan it runs without being asked ----
     SectionTitle("کاوش خودپیشه")
     Card(Modifier.fillMaxWidth()) {

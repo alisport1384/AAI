@@ -4,6 +4,7 @@ import ir.aai.hushyar.core.PriceParser
 import ir.aai.hushyar.core.PriceRules
 import ir.aai.hushyar.core.Text
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -106,5 +107,25 @@ class PriceTest {
     fun currencyWordWinsOverPackScale() {
         val parsed = PriceParser.parse("1250000 تومان", PriceRules(unitScale = 1_000.0))
         assertEquals(1_250_000L, parsed.irt)
+    }
+
+    /** v0.6: "۱ میلیون و ۵۰۰ هزار" is 1,500,000 — not 1,000,000 read as certain. */
+    @Test
+    fun aCompositePriceIsReadWholeNotJustTheFirstGroup() {
+        val parsed = PriceParser.parse("قیمت این گوشی ۱ میلیون و ۵۰۰ هزار تومان است")
+        assertEquals(1_500_000L, parsed.irt)
+        assertFalse(parsed.ambiguous)
+    }
+
+    @Test
+    fun aCompositePriceWithMilliardIsAlsoWhole() {
+        val parsed = PriceParser.parse("۲ میلیارد و ۲۵۰ میلیون تومان")
+        assertEquals(2_250_000_000L, parsed.irt)
+    }
+
+    @Test
+    fun aPlainDecimalPriceIsUnaffected() {
+        val parsed = PriceParser.parse("۱٫۵ میلیون تومان")
+        assertEquals(1_500_000L, parsed.irt)
     }
 }

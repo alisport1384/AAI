@@ -35,6 +35,21 @@ object PriceParser {
 
     private val NUMBER = Regex("[0-9][0-9\\.,\\u066C\\u060C\\s]*[0-9]|[0-9]")
 
+    /**
+     * "۱ میلیون و ۵۰۰ هزار" — two scale groups in one price. Reading only the first group used to
+     * return 1,000,000 instead of 1,500,000, marked `ambiguous = false`: a wrong price that looks
+     * certain. This is the most common Persian price shape for anything above a million.
+     */
+    private val COMPOSITE = Regex(
+        "([0-9]+(?:\\.[0-9]+)?)\\s*(میلیون|میلیارد|million|billion)\\s*(?:و|and)?\\s*" +
+            "([0-9]+(?:\\.[0-9]+)?)\\s*(هزار|میلیون|thousand|million)"
+    )
+
+    private val SCALE_FACTORS = mapOf(
+        "میلیون" to 1_000_000.0, "million" to 1_000_000.0,
+        "میلیارد" to 1_000_000_000.0, "billion" to 1_000_000_000.0
+    )
+
     fun parse(raw: String, rules: PriceRules = PriceRules()): ParsedPrice {
         if (raw.isBlank()) return ParsedPrice(null, true, "خالی")
         val s = Text.asciiDigits(raw).lowercase().replace('\u066B', '.')
@@ -44,14 +59,31 @@ object PriceParser {
 
         var multiplier = 1.0
         val noteParts = mutableListOf<String>()
-        when {
-            s.contains("میلیارد") || s.contains("billion") -> { multiplier *= 1_000_000_000.0; noteParts.add("×میلیارد") }
-            s.contains("میلیون") || s.contains("ملیون") || s.contains("million") -> { multiplier *= 1_000_000.0; noteParts.add("×میلیون") }
-            s.contains("هزار") || s.contains("thousand") -> { multiplier *= 1_000.0; noteParts.add("×هزار") }
-        }
 
-        val match = NUMBER.find(s) ?: return ParsedPrice(null, true, "عددی پیدا نشد")
-        val numeric = parseNumeric(match.value) ?: return ParsedPrice(null, true, "عدد نامعتبر: ${match.value}")
+        val composite = COMPOSITE.find(s)
+        val numeric: Double = if (composite != null) {
+            val big = composite.groupValues[1].toDoubleOrNull()
+            val small = composite.groupValues[3].toDoubleOrNull()
+            if (big == null || small == null) {
+                return ParsedPrice(null, true, "عدد مرکب نامعتبر: ${composite.value}")
+            }
+            val bigScale = SCALE_FACTORS[composite.groupValues[2]] ?: 1_000_000.0
+            // "۲ میلیارد و ۲۵۰ میلیون" is milliard + million, not milliard + thousand.
+            val smallScale = when (composite.groupValues[4]) {
+                "میلیون", "million" -> 1_000_000.0
+                else -> 1_000.0
+            }
+            noteParts.add("ترکیبی")
+            big * bigScale + small * smallScale
+        } else {
+            when {
+                s.contains("میلیارد") || s.contains("billion") -> { multiplier *= 1_000_000_000.0; noteParts.add("×میلیارد") }
+                s.contains("میلیون") || s.contains("ملیون") || s.contains("million") -> { multiplier *= 1_000_000.0; noteParts.add("×میلیون") }
+                s.contains("هزار") || s.contains("thousand") -> { multiplier *= 1_000.0; noteParts.add("×هزار") }
+            }
+            val match = NUMBER.find(s) ?: return ParsedPrice(null, true, "عددی پیدا نشد")
+            parseNumeric(match.value) ?: return ParsedPrice(null, true, "عدد نامعتبر: ${match.value}")
+        }
 
         val scale = when {
             hasRial -> 0.1

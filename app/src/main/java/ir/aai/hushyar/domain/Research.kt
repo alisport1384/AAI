@@ -246,10 +246,8 @@ class DeepResearcher(
             val candidate = "$base $term".replace(Regex("\\s+"), " ").trim()
             if (candidate !in used && model.keepsAnchor(candidate)) return candidate
         }
-        if (langTag == "fa") {
-            val english = "$base review price"
-            if (english !in used) return english
-        }
+        // No last-resort "review price" appended to a Persian question: a gibberish query spends a
+        // real request and teaches the playbook nothing. Better to stop and say so.
         return null
     }
 

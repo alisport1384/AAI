@@ -66,7 +66,7 @@ class FakeTools(
     override fun catalog(): Catalog = Catalog(pack, listings, Resolver.group(listings, pack.priceRules))
 
     override fun memoryWrite(kind: String, text: String, source: String): MemoryItem {
-        val category = MemoryBank.classify(text, pack)
+        val category = if (kind == "goal") MemoryBank.CAT_GOAL else MemoryBank.classify(text, pack)
         val existing = MemoryBank.duplicateOf(
             MemoryItem("probe", kind, text, clock, category = category), memories
         )

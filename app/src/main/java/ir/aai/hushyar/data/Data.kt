@@ -106,6 +106,11 @@ class Db(context: Context) : SQLiteOpenHelper(context, NAME, null, VERSION) {
         }
         if (oldVersion < 3) {
             db.execSQL(KNOWLEDGE_TABLE.replace("CREATE TABLE", "CREATE TABLE IF NOT EXISTS"))
+        }
+        // v0.5 tables. This must be its own step: a real install upgrading from v0.3/v0.4 has
+        // oldVersion == 3, so putting these inside the "< 3" block would leave the app without
+        // qa_case/playbook/domain_stat/plan_state and every v0.5 feature would crash on first use.
+        if (oldVersion < 4) {
             db.execSQL(CASE_TABLE)
             db.execSQL(PLAYBOOK_TABLE)
             db.execSQL(DOMAIN_TABLE)
@@ -733,6 +738,23 @@ class Repos(private val db: Db) {
         }
     }
 
+    /** Every saved plan cursor — used by the backup, not by the researcher. */
+    fun plansAll(): List<PlanProgress> =
+        db.readableDatabase.query("plan_state", arrayOf("goal", "states"), null, null, null, null, null).use { c ->
+            val out = mutableListOf<PlanProgress>()
+            while (c.moveToNext()) {
+                val goal = c.getString(0)
+                val states = c.getString(1).split(";").mapNotNull { row ->
+                    val parts = row.split("|")
+                    if (parts.size < 5) return@mapNotNull null
+                    val status = runCatching { LayerStatus.valueOf(parts[1]) }.getOrDefault(LayerStatus.PENDING)
+                    LayerState(parts[0], status, parts[2].toLongOrNull() ?: 0L, parts[3].toIntOrNull() ?: 0, parts[4].toIntOrNull() ?: 0)
+                }.associateBy { it.id }
+                out.add(PlanProgress(goal, states))
+            }
+            out
+        }
+
     fun planProgressSave(progress: PlanProgress) {
         val encoded = progress.states.values.joinToString(";") {
             "${it.id}|${it.status.name}|${it.lastRunAt}|${it.learned}|${it.queriesDone}"
@@ -868,7 +890,12 @@ class Repos(private val db: Db) {
         val w = db.writableDatabase
         w.beginTransaction()
         try {
-            listOf("listing", "pack", "interview", "memory", "preference", "audit", "event", "knowledge").forEach { w.delete(it, null, null) }
+            listOf(
+                "listing", "pack", "interview", "memory", "preference", "audit", "event", "knowledge",
+                // v0.5 state: cases, proven queries, source trust and the plan cursor are the user's
+                // data too, and a "full reset" that leaves them behind is a lie.
+                "qa_case", "playbook", "domain_stat", "plan_state"
+            ).forEach { w.delete(it, null, null) }
             w.setTransactionSuccessful()
         } finally {
             w.endTransaction()
@@ -907,6 +934,12 @@ class Repos(private val db: Db) {
         listings = listings(),
         memory = memoryAll(5000),
         knowledge = knowledgeAll(5000),
+        // v0.5 state belongs in the backup: a restored install that forgot every case, every proven
+        // query and the plan cursor would start from zero while claiming to be a full restore.
+        cases = casesAll(5000),
+        playbook = playbookAll(),
+        domains = domainsAll(),
+        plans = plansAll(),
         logs = events(5000),
         audits = auditsAll(5000),
         answers = allAnswers(),
@@ -921,7 +954,10 @@ class Repos(private val db: Db) {
         val w = db.writableDatabase
         w.beginTransaction()
         try {
-            listOf("listing", "pack", "interview", "memory", "preference", "audit", "event", "knowledge").forEach { w.delete(it, null, null) }
+            listOf(
+                "listing", "pack", "interview", "memory", "preference", "audit", "event", "knowledge",
+                "qa_case", "playbook", "domain_stat", "plan_state"
+            ).forEach { w.delete(it, null, null) }
             for (pack in snapshot.packs) {
                 val values = ContentValues().apply {
                     put("id", pack.id)
@@ -941,6 +977,46 @@ class Repos(private val db: Db) {
             }
             for (item in snapshot.knowledge) {
                 w.insertWithOnConflict("knowledge", null, knowledgeValues(item), SQLiteDatabase.CONFLICT_REPLACE)
+            }
+            for (case in snapshot.cases) {
+                w.insertWithOnConflict("qa_case", null, caseValues(case), SQLiteDatabase.CONFLICT_REPLACE)
+            }
+            for (entry in snapshot.playbook) {
+                w.insertWithOnConflict(
+                    "playbook", null,
+                    ContentValues().apply {
+                        put("topic_key", entry.topicKey)
+                        put("query", entry.query)
+                        put("wins", entry.wins)
+                        put("losses", entry.losses)
+                        put("last_win_at", entry.lastWinAt)
+                    },
+                    SQLiteDatabase.CONFLICT_REPLACE
+                )
+            }
+            for (stat in snapshot.domains) {
+                w.insertWithOnConflict(
+                    "domain_stat", null,
+                    ContentValues().apply {
+                        put("domain", stat.domain)
+                        put("wins", stat.wins)
+                        put("losses", stat.losses)
+                    },
+                    SQLiteDatabase.CONFLICT_REPLACE
+                )
+            }
+            for (plan in snapshot.plans) {
+                w.insertWithOnConflict(
+                    "plan_state", null,
+                    ContentValues().apply {
+                        put("goal", plan.goal)
+                        put("states", plan.states.values.joinToString(";") { state ->
+                            "${state.id}|${state.status.name}|${state.lastRunAt}|${state.learned}|${state.queriesDone}"
+                        })
+                        put("updated_at", now)
+                    },
+                    SQLiteDatabase.CONFLICT_REPLACE
+                )
             }
             for (event in snapshot.logs) {
                 val values = ContentValues().apply {

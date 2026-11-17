@@ -199,6 +199,108 @@ object PlanBuilder {
         )
     }
 
+    /**
+     * Plan from a goal the user stated in their own words, with no market pack involved.
+     *
+     * This is the autonomy path: "هدف من خرید گوشی سامسونگ زیر ۲۰ میلیون است" is enough for the app
+     * to start working — overview, price, specs, reviews, freshness — instead of waiting for the
+     * user to type «تحقیق کن» before every single step.
+     */
+    fun buildFromGoal(
+        goals: List<String>,
+        attributes: List<String> = emptyList(),
+        langTag: String = "fa",
+        now: Long = 0L
+    ): ResearchPlan {
+        val fa = langTag != "en"
+        val cleaned = goals.map { Text.normalize(it).trim().trimEnd('?', '؟', '.') }
+            .filter { it.length >= 3 }
+            .distinct()
+            .take(3)
+        if (cleaned.isEmpty()) return ResearchPlan("", emptyList(), now)
+        val goalTitle = cleaned.first().take(60)
+        val subject = cleaned.first()
+        val extraAttributes = attributes.filter { it.isNotBlank() }.distinct().take(2)
+
+        val layers = mutableListOf<PlanLayer>()
+
+        layers.add(
+            PlanLayer(
+                id = "goal",
+                kind = LayerKind.MARKET,
+                depth = 0,
+                title = if (fa) "تصویر کلی: $goalTitle" else "Overview: $goalTitle",
+                queries = cleaned.map { goal ->
+                    if (fa) "$goal چیست و چه گزینه‌هایی دارد" else "$goal what are the options"
+                }
+            )
+        )
+        layers.add(
+            PlanLayer(
+                id = "goal-price",
+                kind = LayerKind.PRODUCTS,
+                depth = 1,
+                title = if (fa) "قیمت‌ها و بازه" else "Prices and range",
+                queries = cleaned.map { goal ->
+                    if (fa) "قیمت $goal" else "$goal price"
+                },
+                requires = listOf("goal")
+            )
+        )
+        layers.add(
+            PlanLayer(
+                id = "goal-specs",
+                kind = LayerKind.ATTRIBUTES,
+                depth = 2,
+                title = if (fa) "ویژگی‌ها" else "Specifications",
+                queries = cleaned.flatMap { goal ->
+                    val base = if (fa) "مشخصات $goal" else "$goal specs"
+                    listOf(base) + extraAttributes.map { attribute -> if (fa) "$goal $attribute" else "$goal $attribute" }
+                }.distinct(),
+                requires = listOf("goal-price")
+            )
+        )
+        layers.add(
+            PlanLayer(
+                id = "goal-review",
+                kind = LayerKind.COMPARISON,
+                depth = 3,
+                title = if (fa) "مقایسه و تجربهٔ خریداران" else "Comparison and reviews",
+                queries = cleaned.map { goal ->
+                    if (fa) "مقایسه و نظرات خریداران $goal" else "$goal reviews comparison"
+                },
+                requires = listOf("goal-specs")
+            )
+        )
+        layers.add(
+            PlanLayer(
+                id = "goal-fresh",
+                kind = LayerKind.FRESHNESS,
+                depth = 4,
+                title = if (fa) "تازه‌سازی" else "Freshness",
+                queries = cleaned.take(2).map { goal -> if (fa) "قیمت $goal امسال" else "$goal price this year" },
+                requires = listOf("goal-review")
+            )
+        )
+
+        return ResearchPlan(
+            goal = subject,
+            layers = layers.map { layer -> layer.copy(queries = layer.queries.filter { it.isNotBlank() }) }
+                .filter { it.queries.isNotEmpty() },
+            createdAt = now
+        )
+    }
+
+    /** Pack plan + goal plan in one queue: the pack is the body, the stated goal is what matters most. */
+    fun merge(packPlan: ResearchPlan, goalPlan: ResearchPlan): ResearchPlan {
+        if (goalPlan.layers.isEmpty()) return packPlan
+        if (packPlan.layers.isEmpty()) return goalPlan
+        val ids = goalPlan.layers.map { it.id }.toSet()
+        return packPlan.copy(
+            layers = goalPlan.layers + packPlan.layers.filter { it.id !in ids }
+        )
+    }
+
     /** Progress of a fresh plan: every layer pending. */
     fun emptyProgress(plan: ResearchPlan): Map<String, LayerStatus> =
         plan.layers.associate { it.id to LayerStatus.PENDING }

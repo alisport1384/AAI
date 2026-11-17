@@ -65,7 +65,7 @@ object CaseStore {
         return cases.asSequence()
             .filter { it.ask == ask }
             .filter { it.fresh(now) }
-            .filter { AnswerShapes.answers(model.ask, it.answer, pack) }
+            .filter { AnswerShapes.answers(model, it.answer, pack) }
             .filter { it.topicKey == topic || Similarity.containment(
                 Text.contentTokens(it.topicKey).toSet(),
                 Text.contentTokens(topic).toSet()

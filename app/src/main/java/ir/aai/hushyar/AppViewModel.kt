@@ -107,6 +107,16 @@ class AppViewModel(
     var lastProactive by mutableStateOf<String?>(null)
         private set
 
+    /** v0.6: the goal the user stated, and what every search engine is doing right now. */
+    var goals by mutableStateOf<List<String>>(emptyList())
+        private set
+    var probes by mutableStateOf<List<Triple<String, Boolean, Int>>>(emptyList())
+        private set
+    var probing by mutableStateOf(false)
+        private set
+    var engineCount by mutableStateOf(0)
+        private set
+
     private val qa = QaEngine()
     private val search = SearchCore(HttpUrlTransport())
     private val tools = AndroidTools(repos, store, search)
@@ -319,7 +329,10 @@ class AppViewModel(
                 planRatio = plan.ratio(progress.statuses()),
                 planGoal = plan.goal,
                 caseSummary = ir.aai.hushyar.domain.CaseStore.summary(cases, System.currentTimeMillis()),
-                caseCount = cases.size
+                caseCount = cases.size,
+                goals = tools.goalsNow(),
+                probes = tools.lastProbe(),
+                engineCount = ir.aai.hushyar.domain.Engines.all.size
             )
         }) { apply(it) }
     }
@@ -334,7 +347,10 @@ class AppViewModel(
         val planRatio: Double = 0.0,
         val planGoal: String = "",
         val caseSummary: String = "",
-        val caseCount: Int = 0
+        val caseCount: Int = 0,
+        val goals: List<String> = emptyList(),
+        val probes: List<Triple<String, Boolean, Int>> = emptyList(),
+        val engineCount: Int = 0
     )
 
     private fun apply(snapshot: Secondary) {
@@ -343,6 +359,9 @@ class AppViewModel(
         backupFiles = snapshot.backups
         knowledge = snapshot.knowledge
         researchDepth = snapshot.depth
+        goals = snapshot.goals
+        probes = snapshot.probes
+        engineCount = snapshot.engineCount
         planLines = snapshot.planLines
         planRatio = snapshot.planRatio
         planGoal = snapshot.planGoal
@@ -352,6 +371,36 @@ class AppViewModel(
     }
 
     fun refreshData() = refreshSecondary()
+
+    /**
+     * Register the goal in the user's own words. From here the plan exists even with no market pack,
+     * and the scheduled job continues it without being asked.
+     */
+    fun setGoal(text: String) {
+        val clean = text.trim()
+        if (clean.length < 3) {
+            notice = "هدف خیلی کوتاه است؛ یک جمله بنویس."
+            return
+        }
+        io({ tools.setGoal(clean) }) { plan ->
+            notice = "هدف ثبت شد؛ ${plan.layers.size} لایه برای کاوش ساخته شد."
+            refreshSecondary()
+        }
+    }
+
+    /** Ask every known engine one question and show which ones actually answered. */
+    fun testEngines() {
+        if (probing) return
+        probing = true
+        val query = goals.firstOrNull() ?: qaHistory.firstOrNull()?.first ?: "قیمت گوشی"
+        io({ tools.probeEngines(query) }) { result ->
+            probing = false
+            probes = result.map { Triple(it.id, it.ok, it.hits) }
+            val ok = result.count { it.ok }
+            notice = "آزمون موتورها: $ok از ${result.size} موتور جواب دادند."
+            refreshSecondary()
+        }
+    }
 
     /**
      * One bounded slice of autonomous exploration, on demand. Same code path the scheduler uses, so

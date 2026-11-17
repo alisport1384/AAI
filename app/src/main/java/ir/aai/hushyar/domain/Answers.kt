@@ -149,8 +149,23 @@ object AnswerShapes {
         return null
     }
 
-    /** Yes/no reading: the sentence itself is the proof, the polarity is the answer. */
-    fun booleanOf(sentence: String): Slot? {
+    /**
+     * Yes/no reading. A "بله" invented from a sentence that merely talks about the subject is the
+     * worst kind of answer — confident and unfounded — so the sentence must state polarity with a
+     * strong cue, and when I know which property was asked about it must name that property too.
+     * "است" alone is not a cue: it is in almost every Persian sentence.
+     */
+    private val POLARITY_CUES = listOf(
+        "بله", "خیر", "دارد", "ندارد", "دارند", "ندارند", "هست", "نیست", "هستند", "نیستند",
+        "می‌شود", "نمی‌شود", "میشود", "نمیشود", "yes", "no", "does", "doesn't", "true", "false"
+    )
+
+    fun booleanOf(sentence: String, attributeWords: List<String> = emptyList()): Slot? {
+        val norm = Text.normalize(sentence)
+        if (POLARITY_CUES.none { cue -> norm.contains(Text.normalize(cue)) }) return null
+        if (attributeWords.isNotEmpty() &&
+            attributeWords.none { word -> Text.normalize(word).let { it.length > 2 && norm.contains(it) } }
+        ) return null
         val negative = KnowledgeBank.isNegative(sentence)
         return Slot(if (negative) "نه" else "بله", "boolean")
     }
@@ -164,7 +179,13 @@ object AnswerShapes {
      * Extracts the answer span a sentence offers for this kind of question. Null means
      * "this sentence is not an answer", not "I am not sure".
      */
-    fun slot(ask: AskType, sentence: String, pack: MarketPack? = null): Slot? = when (ask) {
+    fun slot(
+        ask: AskType,
+        sentence: String,
+        pack: MarketPack? = null,
+        /** The property words the question used, so a yes/no answer can be required to mention them. */
+        attributeWords: List<String> = emptyList()
+    ): Slot? = when (ask) {
         AskType.PRICE -> priceOf(sentence)
         AskType.AMOUNT -> amountOf(sentence) ?: priceOf(sentence)
         AskType.DATE -> dateOf(sentence)
@@ -178,11 +199,11 @@ object AnswerShapes {
         AskType.REASON -> reasonOf(sentence)
         AskType.METHOD -> methodOf(sentence)
         AskType.COMPARISON -> comparisonOf(sentence)
-        // An opinion question ("بهترین … چیست؟") is answered by text about the subject, not by a
-        // dedicated answer shape: the recommendation sentence itself is the answer.
-        AskType.OPINION -> opinionOf(sentence) ?: sentence.take(240).let { Slot(it, "opinion") }
+        // An opinion question ("بهترین … چیست؟") needs a recommendation sentence. Plain topical
+        // text is not a recommendation, so it stays context instead of becoming an answer.
+        AskType.OPINION -> opinionOf(sentence)
         AskType.LIST -> listOfItems(sentence)
-        AskType.BOOLEAN -> booleanOf(sentence)
+        AskType.BOOLEAN -> booleanOf(sentence, attributeWords)
         AskType.FACT -> sentence.take(240).let { Slot(it, "fact") }
     }
 
@@ -191,8 +212,16 @@ object AnswerShapes {
         priceOf(sentence) != null || amountOf(sentence) != null || dateOf(sentence) != null
 
     /** Does this stored claim answer a question of this type at all? Used to gate knowledge answers. */
-    fun answers(ask: AskType, claim: String, pack: MarketPack? = null): Boolean =
-        slot(ask, claim, pack) != null
+    fun answers(
+        ask: AskType,
+        claim: String,
+        pack: MarketPack? = null,
+        attributeWords: List<String> = emptyList()
+    ): Boolean = slot(ask, claim, pack, attributeWords) != null
+
+    /** Convenience overload for callers that have the parsed question at hand. */
+    fun answers(model: QuestionModel, claim: String, pack: MarketPack? = null): Boolean =
+        slot(model.ask, claim, pack, QuestionReader.attributeWords(model.attribute)) != null
 }
 
 data class AnswerCandidate(
@@ -250,7 +279,9 @@ object AnswerFocus {
                 // Hard gate: a sentence that does not name the subject is about something else.
                 if (!model.aboutSubject(sentence)) continue
                 val coverage = model.subjectCoverage(sentence)
-                val slot = AnswerShapes.slot(model.ask, sentence, pack)
+                val slot = AnswerShapes.slot(
+                    model.ask, sentence, pack, QuestionReader.attributeWords(model.attribute)
+                )
                 val attributeHit = model.attribute?.let { attribute ->
                     val words = listOf(attribute) + (pack?.attributes?.firstOrNull { it.label == attribute }?.synonyms ?: emptyList())
                     words.any { Text.normalize(sentence).contains(Text.normalize(it)) }

@@ -378,6 +378,11 @@ class Agent(
         val model = outcome.model ?: QuestionReader.read(target, langTag)
         val draftAnswer: AnswerDraft = if (plan != null && plan.answered) {
             directDraft(plan, model, outcome, langTag)
+        } else if (known.isNotEmpty()) {
+            // Every engine failed, or the pages we got do not answer this question — but we are not
+            // empty-handed: say what we already hold, with its source and its age. Refusing while
+            // owning a stored answer was the reason "if the engine is down, it does not answer".
+            partialKnowledgeDraft(known, model, outcome, langTag)
         } else {
             refusedDraft(
                 when {
@@ -437,6 +442,9 @@ class Agent(
                 if (langTag == "en") "this answer is now a case: next time it needs no search"
                 else "این پاسخ به‌عنوان پرونده ذخیره شد: بار بعد جستجوی تازه لازم نیست"
             )
+            // The answer was already composed above, so the note has to be written back into it —
+            // otherwise the promise is made in the log and never shown to the user.
+            answer = answer.copy(learned = learned.take(6))
         } else {
             if (winningQuery != null) tools.playbookRecord(topic, winningQuery, false)
             plan?.source?.page?.url?.let { tools.domainRecord(KnowledgeBank.draftHost(it), false) }
@@ -459,7 +467,9 @@ class Agent(
         items: List<KnowledgeItem>,
         pack: MarketPack
     ): List<AnswerCandidate> = items.mapNotNull { item ->
-        val slot = AnswerShapes.slot(model.ask, item.claim, pack) ?: return@mapNotNull null
+        val slot = AnswerShapes.slot(
+            model.ask, item.claim, pack, QuestionReader.attributeWords(model.attribute)
+        ) ?: return@mapNotNull null
         val page = ExtractedPage(url = item.url, title = item.domain, text = item.claim)
         val coverage = model.subjectCoverage(item.claim)
         if (coverage <= 0.0) return@mapNotNull null
@@ -503,6 +513,53 @@ class Agent(
             missing = emptyList(),
             confidence = (0.52 + 0.10 * plan.agreement + 0.18 * outcome.coverage -
                 (if (plan.disagreement.isNotEmpty()) 0.10 else 0.0)).coerceIn(0.35, 0.92),
+            refused = false,
+            lang = langTag
+        )
+    }
+
+    /**
+     * Best-effort answer from what is already stored, when a fresh search produced nothing usable.
+     * It is deliberately labelled: partial, dated, sourced — never presented as a fresh answer.
+     */
+    private fun partialKnowledgeDraft(
+        known: List<KnowledgeItem>,
+        model: QuestionModel,
+        outcome: ResearchOutcome,
+        langTag: String
+    ): AnswerDraft {
+        val items = known.sortedByDescending { it.lastVerifiedAt }.take(4)
+        val newest = items.maxOfOrNull { it.lastVerifiedAt } ?: tools.now()
+        val ageDays = ((tools.now() - newest).coerceAtLeast(0L)) / 86_400_000L
+        val reason = when {
+            outcome.rounds.isEmpty() || outcome.pages.isEmpty() -> if (langTag == "en") "no page could be fetched" else "هیچ صفحه‌ای واکشی نشد"
+            outcome.answer != null && !outcome.answer.answered ->
+                if (langTag == "en") "the pages did not contain ${QuestionReader.expectedAnswerLabel(model.ask)}"
+                else "صفحه‌ها ${QuestionReader.expectedAnswerLabel(model.ask)} نداشتند"
+            else -> if (langTag == "en") "the evidence was too thin" else "شواهد کافی نبود"
+        }
+        val engines = outcome.failures.entries.take(3).joinToString("؛ ") { "${it.key}: ${it.value}" }
+        return AnswerDraft(
+            intent = "knowledge.partial",
+            headline = if (langTag == "en") {
+                "Partial answer from stored knowledge (last verified ${Jalali.format(newest)}, ~$ageDays day(s) ago). " +
+                    "A fresh search failed: $reason." + if (engines.isNotBlank()) " Engines: $engines" else ""
+            } else {
+                "پاسخ ناقص از دانش ذخیره‌شده (آخرین بازبینی ${Jalali.format(newest)}، حدود ${Text.num(ageDays)} روز پیش). " +
+                    "جستجوی تازه نتیجه نداد: $reason." + if (engines.isNotBlank()) " موتورها: $engines" else ""
+            },
+            facts = items.mapIndexed { index, item -> Fact("K${index + 1}", item.claim.take(280)) },
+            citations = items.mapIndexed { index, item ->
+                Citation("K${index + 1}", item.domain.ifBlank { "دانش" }, item.url)
+            },
+            missing = buildList {
+                add(if (langTag == "en") "a fresh source for ${QuestionReader.expectedAnswerLabel(model.ask)}"
+                else "منبع تازه برای ${QuestionReader.expectedAnswerLabel(model.ask)}")
+                if (items.any { KnowledgeBank.isStale(it, tools.now()) }) {
+                    add(if (langTag == "en") "some stored items are stale" else "بخشی از دانش ذخیره‌شده کهنه است")
+                }
+            },
+            confidence = 0.42,
             refused = false,
             lang = langTag
         )
@@ -566,7 +623,8 @@ class Agent(
         phraser: Phraser,
         step: (String, String, Map<String, String>, String) -> Unit
     ): AgentOutcome {
-        val stale = tools.knowledgeStale(4)
+        // At most two topics per refresh: each one is a full research loop with the user's budget.
+        val stale = tools.knowledgeStale(2)
         step("شناسایی دانش کهنه", "knowledge.stale", emptyMap(), "کهنه: ${stale.size}")
         if (stale.isEmpty()) {
             val answer = Answer(
@@ -641,6 +699,28 @@ class Agent(
     ): Answer {
         val pack = tools.catalog().pack
         return when (command.kind) {
+            CommandKind.GOAL -> {
+                val payload = command.payload.ifBlank { question }
+                val written = tools.memoryWrite("goal", payload, "user")
+                actions.add("goal.set:${written.id}")
+                step(
+                    "ثبت هدف و شروع کار خودکار", "goal.set",
+                    mapOf("category" to written.category),
+                    "از این لحظه پلان پژوهش ساخته می‌شود و بدون پرسش تازه ادامه پیدا می‌کند"
+                )
+                Answer(
+                    intent = "goal.set",
+                    text = if (langTag == "en") {
+                        "Goal saved. I start researching it myself: overview, prices, specs, reviews, freshness."
+                    } else {
+                        "هدف ثبت شد. خودم شروع می‌کنم: تصویر کلی، قیمت‌ها، مشخصات، نظرات و تازه‌سازی — بدون اینکه چیزی بپرسی."
+                    },
+                    bullets = listOf(payload.take(240)),
+                    citations = listOf(Citation(written.id, "حافظه", null)),
+                    confidence = 1.0,
+                    lang = langTag
+                )
+            }
             CommandKind.SAVE -> {
                 val payload = command.payload.ifBlank { question }
                 val written = tools.memoryWrite(command.memoryKind, payload, "user")
@@ -740,7 +820,7 @@ class Agent(
                     lang = langTag
                 )
             }
-            CommandKind.RESEARCH, CommandKind.REFRESH -> Answer(
+            CommandKind.GOAL, CommandKind.RESEARCH, CommandKind.REFRESH -> Answer(
                 intent = "noop", text = "", confidence = 0.0, lang = langTag
             )
         }
@@ -803,7 +883,7 @@ class Agent(
 
 // ---------- commands ----------
 
-enum class CommandKind { SAVE, FORGET, BACKUP, LOG, RECALL, KNOWLEDGE, RESEARCH, REFRESH }
+enum class CommandKind { SAVE, FORGET, GOAL, BACKUP, LOG, RECALL, KNOWLEDGE, RESEARCH, REFRESH }
 
 data class Command(val kind: CommandKind, val payload: String, val memoryKind: String = "note")
 
@@ -823,6 +903,10 @@ object CommandParser {
     )
     private val research = Regex(
         "(?i)^\\s*(تحقیق\\s*کن|جستجو\\s*کن|بگرد|پیدا\\s*کن|بررسی\\s*کن|research|look\\s*up|search)\\s*(?:دربارهٔ|درباره|برای|about|for)?\\s*[:：]?\\s*(.*)$",
+        RegexOption.DOT_MATCHES_ALL
+    )
+    private val goal = Regex(
+        "(?i)^\\s*(?:هدفم|هدف\\s*من|هدفم\\s*اینه\\s*که|قصد\\s*دارم|میخوام|می‌خوام|goal)\\s*(?:که|:)?\\s*(?:خرید|پیدا\\s*کردن)?\\s*[:：]?\\s*(.*)$",
         RegexOption.DOT_MATCHES_ALL
     )
     private val refresh = Regex("(?i)(بروز\\s*رسانی|به\\s*روز\\s*کن|به‌روز\\s*کن|تازه\\s*سازی|refresh|update)")
@@ -856,6 +940,12 @@ object CommandParser {
         forget.find(text)?.let { match ->
             val payload = match.groups[1]?.let { original.substring(it.range) }.orEmpty().trim()
             if (payload.isNotEmpty()) return Command(CommandKind.FORGET, payload)
+        }
+        // Stated goal: "هدفم خرید گوشی زیر ۲۰ میلیون است" — this is what makes the app start working
+        // on its own instead of waiting for «تحقیق کن».
+        goal.find(text)?.let { match ->
+            val payload = match.groups[1]?.let { original.substring(it.range) }.orEmpty().trim()
+            if (payload.length >= 4) return Command(CommandKind.GOAL, payload, "goal")
         }
         research.find(text)?.let { match ->
             val payload = match.groups[2]?.let { original.substring(it.range) }.orEmpty().trim()

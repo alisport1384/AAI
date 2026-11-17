@@ -8,6 +8,7 @@ import ir.aai.hushyar.domain.AgentTools
 import ir.aai.hushyar.domain.Backup
 import ir.aai.hushyar.domain.Catalog
 import ir.aai.hushyar.domain.CaseStore
+import ir.aai.hushyar.domain.EngineProbe
 import ir.aai.hushyar.domain.DomainStat
 import ir.aai.hushyar.domain.DomainTrust
 import ir.aai.hushyar.domain.Evidence
@@ -59,7 +60,10 @@ class AndroidTools(
 
     override fun memoryWrite(kind: String, text: String, source: String): MemoryItem {
         val pack = repos.activePack()
-        val category = MemoryBank.classify(text, pack)
+        // An explicitly stated goal is a goal even when it names a budget ("زیر ۲۰ میلیون"), which
+        // the classifier would otherwise file under «بودجه». The plan is built from goals, so the
+        // category must not depend on which keyword the sentence happens to contain.
+        val category = if (kind == "goal") MemoryBank.CAT_GOAL else MemoryBank.classify(text, pack)
         val tags = MemoryBank.tags(text, pack)
         val importance = MemoryBank.importance(text, explicit = source == "user", pack = pack)
         val probe = MemoryItem(
@@ -158,11 +162,85 @@ class AndroidTools(
     override fun researchPlan(): ResearchPlan {
         val pack = repos.activePack() ?: EMPTY_PACK
         val catalog = catalog()
-        val questions = repos.events(200)
+        val questions = repos.events(300)
             .filter { event -> event.kind == "answer" }
             .map { event -> event.detail.substringAfter("q=").substringBefore(" |") }
-        return PlanBuilder.build(pack, catalog.products, questions.filter { it.isNotBlank() }, "fa", now())
+            .filter { it.isNotBlank() }
+        // Autonomy: a stated goal is enough. Without a market pack the app used to have an empty
+        // plan (one "بازار" layer) and therefore never explored on its own.
+        val goals = goalsNow()
+        val packEmpty = pack.id == EMPTY_PACK.id
+        val packPlan = if (packEmpty) {
+            ResearchPlan("", emptyList(), now())
+        } else {
+            PlanBuilder.build(pack, catalog.products, questions, "fa", now())
+        }
+        val goalPlan = PlanBuilder.buildFromGoal(
+            goals = goals,
+            attributes = pack.attributes.map { it.label },
+            langTag = "fa",
+            now = now()
+        )
+        return PlanBuilder.merge(packPlan, goalPlan).let { plan ->
+            if (plan.layers.isEmpty() && questions.isNotEmpty()) {
+                // Last resort: explore the questions the user actually asked.
+                PlanBuilder.buildFromGoal(questions.take(3), emptyList(), "fa", now())
+            } else {
+                plan
+            }
+        }
     }
+
+    /** Goals the user stated: saved in memory, in their own words. */
+    fun goalsNow(): List<String> =
+        repos.memoryAll(300)
+            .filter { it.category == ir.aai.hushyar.domain.MemoryBank.CAT_GOAL }
+            .sortedByDescending { it.importance }
+            .map { it.text.trim() }
+            .filter { it.length >= 3 }
+            .distinct()
+            .take(3)
+
+    /** Register a goal explicitly (UI or the «هدف من …» command). Returns the plan it produced. */
+    fun setGoal(text: String): ResearchPlan {
+        val clean = text.trim()
+        if (clean.isNotEmpty()) {
+            repos.addMemory(
+                kind = "goal",
+                body = clean,
+                category = ir.aai.hushyar.domain.MemoryBank.CAT_GOAL,
+                tags = ir.aai.hushyar.domain.MemoryBank.tags(clean, null),
+                importance = 0.95,
+                source = "user"
+            )
+            repos.log("memory", "user", "هدف ثبت شد", clean.take(200))
+        }
+        return researchPlan()
+    }
+
+    /** Ask every known engine the same question and keep the result, so the UI can show the truth. */
+    fun probeEngines(query: String, langTag: String = "fa"): List<EngineProbe> =
+        search.probe(query, langTag).also { probes ->
+            repos.putPreference(
+                "engine_probe",
+                probes.joinToString("|") { "${it.id}~${if (it.ok) 1 else 0}~${it.hits}~${it.millis}" }
+            )
+            repos.log(
+                "web", "user", "آزمون موتورهای جستجو",
+                probes.joinToString("، ") { "${it.id}=${if (it.ok) it.hits else "×"}" }.take(900)
+            )
+        }
+
+    /** The last probe as (engineId, ok, hits, millis). Empty when it was never run. */
+    fun lastProbe(): List<Triple<String, Boolean, Int>> =
+        (repos.preference("engine_probe") ?: "")
+            .split("|")
+            .filter { it.isNotBlank() }
+            .mapNotNull { row ->
+                val parts = row.split("~")
+                if (parts.size < 4) null
+                else Triple(parts[0], parts[1] == "1", parts[2].toIntOrNull() ?: 0)
+            }
 
     override fun planProgress(): PlanProgress {
         val plan = researchPlan()
