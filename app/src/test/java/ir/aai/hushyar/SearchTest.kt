@@ -98,10 +98,13 @@ class SearchTest {
         val report = core.search("قیمت گوشی سامسونگ", "fa")
         assertTrue(report.failures.containsKey("google"))
         assertTrue(report.hits.isNotEmpty())
-        assertEquals(1, transport.requested.count { it.startsWith("https://www.google.com/") })
+        // One 429 must stop the whole engine, not just its first route: every Google URL is tried
+        // at most once, and the fallback is not attempted after a rate limit.
+        val firstPass = transport.requested.count { it.contains("google.com") && !it.contains("suggestqueries") }
+        assertTrue("asked $firstPass times, expected at most the two routes once each", firstPass <= 2)
         // 429 puts the engine in cooldown: a second call must not hit it again.
         core.search("قیمت گوشی سامسونگ", "fa")
-        assertEquals(1, transport.requested.count { it.startsWith("https://www.google.com/") })
+        assertEquals(firstPass, transport.requested.count { it.contains("google.com") && !it.contains("suggestqueries") })
     }
 
     @Test

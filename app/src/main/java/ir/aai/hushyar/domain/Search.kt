@@ -76,8 +76,13 @@ data class EngineSpec(
 
     fun render(template: String, query: String, langTag: String): String {
         val encoded = java.net.URLEncoder.encode(query, "UTF-8").replace("+", "%20")
-        val hl = if (langTag == "fa") "fa" else "en"
-        return template.replace("{q}", encoded).replace("{hl}", hl)
+        val fa = langTag == "fa"
+        val hl = if (fa) "fa" else "en"
+        val gl = if (fa) "ir" else "us"
+        return template.replace("{q}", encoded)
+            .replace("{hl}", hl)
+            .replace("{gl}", gl)
+            .replace("{ceid}", "${gl.uppercase()}:$hl")
     }
 }
 
@@ -89,6 +94,27 @@ data class EngineSpec(
 object Engines {
 
     val all: List<EngineSpec> = listOf(
+        // ---- Google first, as the user asked — with the route that actually answers ----
+        //
+        // Measured 2026-11-17 from a datacenter IP: google.com/search returns HTTP 200 with a
+        // JavaScript shell (one link, `enablejs`), so the plain HTML route cannot answer there.
+        // What *does* answer without a key is Google's own news feed, which is machine-readable
+        // RSS and carries real Google-ranked items. The HTML route stays first because on a phone
+        // with a residential IP it can still return real markup; the RSS route is the fallback
+        // that keeps Google from being a dead entry.
+        EngineSpec(
+            "google", "Google", "https://www.google.com/search?num=10&hl={hl}&gl={gl}&q={q}&udm=14",
+            listOf("google.com", "google.co", "gstatic.com", "googleusercontent.com"),
+            kind = EngineKind.GENERAL, friction = 0, needsJs = true,
+            note = "صفحهٔ وب گوگل بدون جاوااسکریپت نتیجه نمی‌دهد؛ مسیر جانشین، خوراک گوگل‌نیوز است",
+            fallbacks = listOf(
+                Endpoint(
+                    "https://news.google.com/rss/search?q={q}&hl={hl}&gl={gl}&ceid={ceid}",
+                    SerpFormat.RSS,
+                    "خوراک گوگل‌نیوز (بدون کلید، خوانا برای برنامه)"
+                )
+            )
+        ),
         // ---- the ones that usually hand us plain HTML ----
         EngineSpec(
             "ddg", "DuckDuckGo (html)", "https://html.duckduckgo.com/html/?q={q}",
@@ -194,11 +220,7 @@ object Engines {
             listOf("yooz.ir"), kind = EngineKind.PERSIAN, friction = 3
         ),
         // ---- usually blocked or JavaScript-only: kept last, still worth one try ----
-        EngineSpec(
-            "google", "Google", "https://www.google.com/search?num=10&hl={hl}&q={q}",
-            listOf("google.com", "google.co", "gstatic.com", "googleusercontent.com"),
-            friction = 3, needsJs = true, note = "اغلب صفحهٔ رضایت/کپچا می‌دهد"
-        ),
+
         EngineSpec(
             "yandex", "Yandex", "https://yandex.com/search/?text={q}",
             listOf("yandex.com", "yandex.ru", "yastatic.net"), friction = 3, needsJs = true
@@ -467,6 +489,46 @@ object JsonSerp {
 }
 
 /**
+ * Google's autocomplete endpoint, measured working on 2026-11-17 with no key, no account and no
+ * JavaScript (`suggestqueries.google.com/complete/search?client=firefox` returns a small JSON
+ * array). It is not a result list — it is a *query repair* tool, and it is the one Google surface
+ * that a small offline-first app can honestly use: for «میلگرد» it answers «میلگرد ۱۶ چند کیلو
+ * است», which is the difference between a useless query and an answerable one.
+ */
+object Suggestions {
+
+    /** `["میلگرد",["میلگرد","میلگرد قیمت",…],[],{…}]` — the Firefox client shape. */
+    fun parse(body: String, limit: Int = 10): List<String> = runCatching {
+        val root = MiniJson.parse(body).itemsOrEmpty
+        val list = root.getOrNull(1)?.asStrings().orEmpty()
+        list.map { it.trim() }.filter { it.isNotBlank() }.distinct().take(limit)
+    }.getOrDefault(emptyList())
+
+    /**
+     * The best repair for [query], or null when nothing is better than what we already have.
+     * Rules, all measured against real Persian suggestions: it must keep at least one word of the
+     * query, must not be the query itself, must not be a shopping-site stub, and stays short.
+     */
+    fun repair(query: String, suggestions: List<String>): String? {
+        val clean = query.trim()
+        if (clean.isEmpty() || suggestions.isEmpty()) return null
+        val words = Text.contentTokens(clean).filterLoadable()
+        if (words.isEmpty()) return null
+        return suggestions
+            .asSequence()
+            .map { it.trim() }
+            .filter { it.length in 3..60 }
+            .filter { it != clean && !it.equals(clean, ignoreCase = true) }
+            .filter { cand -> words.any { cand.contains(it, ignoreCase = true) } }
+            .filter { cand -> cand.split(' ').size <= 8 }
+            .sortedByDescending { cand -> words.count { cand.contains(it, ignoreCase = true) } * 10 + cand.length.coerceAtMost(40) }
+            .firstOrNull()
+    }
+
+    private fun List<String>.filterLoadable(): List<String> = filter { it.length > 1 }
+}
+
+/**
  * Why an engine gave us nothing. Measured failure modes from a datacenter IP on 2026-11-17:
  * Google/Startpage return a JavaScript shell with status 200; Ecosia/Mojeek/Yep return 403;
  * DuckDuckGo answers 202 with an anomaly page when asked twice in a row.
@@ -596,7 +658,9 @@ class SearchCore(
         limitPerEngine: Int = 8,
         maxEngines: Int = defaultEngines,
         /** Stop asking engines once this many distinct results were collected. */
-        enoughHits: Int = 12
+        enoughHits: Int = 12,
+        /** Internal: the reflection retry is allowed once, never inside itself. */
+        allowReflection: Boolean = true
     ): SearchReport {
         val clean = Text.normalize(query).trim()
         if (clean.isEmpty()) return SearchReport(clean, emptyList())
@@ -643,18 +707,20 @@ class SearchCore(
                 }
             }
         }
-        val merged = fuse(perEngine)
+        val merged = fuse(perEngine, clean)
         val report = SearchReport(clean, merged, perEngine.mapValues { it.value.size }, errors, notes.toMap())
         if (merged.size >= 3) return report
 
         // Reflection step: a thin result set usually means the query was too narrow or in the
-        // wrong language. Retry once with bilingual expansion — but never recurse further, and
-        // never when every engine failed (that is a network problem, not a query problem).
+        // wrong language. Google's own autocomplete is asked first (it is a free, key-less Google
+        // signal and it fixes bad queries far better than a synonym table); the lexicon expansion
+        // stays as the fallback when autocomplete has nothing better to offer.
         val usable = report.perEngine.isNotEmpty()
-        val expanded = expandQuery(clean)
+        val repaired = if (allowReflection && usable && merged.size < 5) suggestRepair(clean, langTag) else null
+        val expanded = repaired ?: expandQuery(clean)
         if (usable && expanded != clean && clock() - started < maxCallMillis) {
-            val second = search(expanded, langTag, limitPerEngine, maxEngines, enoughHits)
-            val combined = fuseResults(listOf(merged, second.hits))
+            val second = search(expanded, langTag, limitPerEngine, maxEngines, enoughHits, allowReflection = false)
+            val combined = fuseResults(listOf(merged, second.hits), expanded)
             return report.copy(
                 query = expanded,
                 hits = combined,
@@ -692,7 +758,8 @@ class SearchCore(
                 continue
             }
             if (!response.ok) {
-                last = SerpGuard.classify(response.status, "", 0)
+                val failed = SerpGuard.classify(response.status, "", 0)
+                last = if (last.outcome == SerpOutcome.NETWORK || last.outcome == SerpOutcome.HTTP_ERROR) failed else last
                 continue
             }
             val hits = try {
@@ -705,7 +772,10 @@ class SearchCore(
             if (hits.isNotEmpty()) {
                 return EngineAnswer(hits, verdict, endpoint.format, endpoint.note, clock() - started)
             }
-            last = verdict
+            // Keep the most informative failure: if the HTML route answered with a JavaScript shell
+            // and the fallback route was simply unreachable, "needs JavaScript" is the useful fact,
+            // not "network error" from whatever was tried last.
+            last = if (last.outcome == SerpOutcome.NETWORK || last.outcome == SerpOutcome.HTTP_ERROR) verdict else last
         }
         return EngineAnswer(emptyList(), last, SerpFormat.HTML, "", clock() - started)
     }
@@ -768,6 +838,20 @@ class SearchCore(
         return out
     }
 
+    /**
+     * Asks Google's autocomplete for a better phrasing of [query]. Returns null when it has nothing
+     * better, or when the endpoint is unreachable — a suggestion is a bonus, never a requirement.
+     */
+    fun suggestRepair(query: String, langTag: String = "fa"): String? {
+        val hl = if (langTag == "fa") "fa" else "en"
+        val url = "https://suggestqueries.google.com/complete/search?client=firefox&hl=$hl&q=" +
+            java.net.URLEncoder.encode(query, "UTF-8").replace("+", "%20")
+        val body = runCatching {
+            http.get(HttpRequest(url, HttpDefaults.headers(langTag)))
+        }.getOrNull()?.takeIf { it.ok }?.body ?: return null
+        return Suggestions.repair(query, Suggestions.parse(body))
+    }
+
     /** Cross-language / synonym expansion for the reflection retry. */
     fun expandQuery(query: String): String {
         val tokens = Text.contentTokens(query)
@@ -790,6 +874,53 @@ class SearchCore(
         return PageExtractor.extract(response.body, url, maxChars)
     }
 
+    /**
+     * How good a hit actually is for the query. Reciprocal-rank fusion alone ranks *agreement*
+     * between engines, which is how a brand homepage returned by three engines used to outrank the
+     * one article that answered the question. This adds the two things RRF ignores: relevance to
+     * the words the user typed, and how much the engine is trusted.
+     */
+    object HitRanking {
+
+        /** Engines that gave the best answers in the 2026-11 survey rank highest. */
+        fun trust(engine: String): Double = when (engine) {
+            "google" -> 1.0
+            "bing" -> 0.85
+            "ddg", "ddg-lite" -> 0.8
+            "wikipedia-fa", "wikipedia-en" -> 0.75
+            "mwmbl" -> 0.65
+            "seznam" -> 0.6
+            "wiby" -> 0.55
+            else -> 0.45
+        }
+
+        /** Share of the query's content words that appear in the hit's title, url or snippet. */
+        fun relevance(query: String, hit: WebHit): Double {
+            val words = Text.contentTokens(query).filter { it.length > 2 }.distinct()
+            if (words.isEmpty()) return 0.0
+            val haystack = (hit.title + " " + hit.url + " " + hit.snippet).lowercase()
+            val covered = words.count { haystack.contains(it.lowercase()) }
+            var score = covered.toDouble() / words.size
+            // A title that literally contains the query is worth more than a mention in a snippet.
+            if (hit.title.lowercase().contains(query.trim().lowercase())) score += 0.25
+            return score.coerceIn(0.0, 1.0)
+        }
+
+        /** A front page is rarely the answer to a specific question. */
+        fun isHomepage(url: String): Boolean {
+            val path = runCatching { java.net.URI(url).path.orEmpty() }.getOrDefault("")
+            return path.isEmpty() || path == "/"
+        }
+
+        fun score(query: String, hit: WebHit, rrfNorm: Double): Double {
+            val relevance = relevance(query, hit)
+            val base = 0.45 * rrfNorm + 0.40 * relevance + 0.15 * trust(hit.engine)
+            // A front page is a signpost, not an answer: it has to be an almost exact match before
+            // it may outrank a page that actually discusses the question.
+            return if (isHomepage(hit.url)) base * 0.75 else base
+        }
+    }
+
     companion object {
 
         /** An engine that said 403/429 rests for this long, then gets another honest try. */
@@ -799,7 +930,7 @@ class SearchCore(
          * Reciprocal-rank fusion: an engine that cannot be gamed by one lucky page wins,
          * because agreement across engines outranks depth inside a single engine.
          */
-        fun fuse(perEngine: Map<String, List<WebHit>>): List<WebHit> {
+        fun fuse(perEngine: Map<String, List<WebHit>>, query: String = ""): List<WebHit> {
             if (perEngine.isEmpty()) return emptyList()
             val byUrl = LinkedHashMap<String, MutableList<WebHit>>()
             for ((_, hits) in perEngine) for (hit in hits) {
@@ -807,23 +938,37 @@ class SearchCore(
             }
             val lists = perEngine.values.map { hits -> hits.map { it.url } }
             val fused = Ranking.rrf(lists)
-            val order = fused.map { it.first }.filter { byUrl.containsKey(it) }
-            val leftovers = byUrl.keys.filter { it !in order }
-            return (order + leftovers).map { url ->
-                val group = byUrl.getValue(url)
-                val best = group.minByOrNull { it.rank } ?: group.first()
-                best.copy(snippet = group.map { it.snippet }.firstOrNull { it.length > 40 } ?: best.snippet)
-            }
+            val rrfByUrl = fused.toMap()
+            val maxRrf = (rrfByUrl.values.maxOrNull() ?: 1.0).takeIf { it > 0.0 } ?: 1.0
+            return byUrl.entries
+                .map { (url, group) ->
+                    val best = group.minByOrNull { it.rank } ?: group.first()
+                    val merged = best.copy(
+                        snippet = group.map { it.snippet }.firstOrNull { it.length > 40 } ?: best.snippet
+                    )
+                    val rrfNorm = (rrfByUrl[url] ?: 0.0) / maxRrf
+                    merged to HitRanking.score(query, merged, rrfNorm)
+                }
+                .sortedWith(compareByDescending<Pair<WebHit, Double>> { it.second }.thenBy { it.first.rank })
+                .map { it.first }
         }
 
-        fun fuseResults(lists: List<List<WebHit>>): List<WebHit> {
+        fun fuseResults(lists: List<List<WebHit>>, query: String = ""): List<WebHit> {
             val byUrl = LinkedHashMap<String, WebHit>()
             for (list in lists) for (hit in list) {
                 val existing = byUrl[hit.url]
                 if (existing == null || existing.snippet.length < hit.snippet.length) byUrl[hit.url] = hit
             }
-            val order = lists.flatten().map { it.url }.distinct()
-            return order.mapNotNull { byUrl[it] }
+            val firstSeen = lists.flatten().map { it.url }.distinct()
+            val order = firstSeen.withIndex().associate { it.value to it.index }
+            val maxRank = (order.values.maxOrNull() ?: 0).coerceAtLeast(1)
+            return byUrl.values
+                .map { hit ->
+                    val rrfNorm = 1.0 - (order[hit.url] ?: 0).toDouble() / (maxRank + 1)
+                    hit to HitRanking.score(query, hit, rrfNorm)
+                }
+                .sortedWith(compareByDescending<Pair<WebHit, Double>> { it.second }.thenBy { it.first.rank })
+                .map { it.first }
         }
     }
 }

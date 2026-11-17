@@ -167,12 +167,18 @@ class EngineReachTest {
     }
 
     @Test
-    fun enginesThatWereMeasuredWorkingAreOrderedBeforeTheBlockedOnes() {
+    fun googleLeadsBecauseTheUserAskedForItAndItsFallbackIsHonest() {
+        // v0.9.1: the order is a product decision, not a measurement. Google's HTML route was
+        // measured returning a JavaScript shell from a datacenter IP, so it now carries Google's
+        // own news feed as a fallback and says so in its note. What must stay true is that the
+        // claim is not dressed up: the note is on the engine, and a failing route is still named.
         val ordered = Engines.ordered("fa").map { it.id }
-        val bing = ordered.indexOf("bing")
-        val google = ordered.indexOf("google")
-        assertTrue("Bing answered in the survey and must be tried first", bing in 0 until ordered.size)
-        assertTrue("Google returned a JS shell, it must not lead", google > bing)
+        assertEquals("google", ordered.first())
+        val google = Engines.byId("google")!!
+        assertTrue("the JS limitation must be admitted in the note", google.note.contains("جاوااسکریپت"))
+        assertTrue("and it must ship a machine-readable route", google.endpoints.size >= 2)
+        assertTrue("the engines that answered in the survey are still in the catalogue",
+            ordered.contains("bing") && ordered.contains("mwmbl"))
     }
 
     @Test
