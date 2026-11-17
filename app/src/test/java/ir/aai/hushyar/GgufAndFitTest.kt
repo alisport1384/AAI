@@ -309,7 +309,7 @@ class GgufAndFitTest {
     }
 
     private fun fileOf(bytes: Int): File =
-        File.createTempFile("m", ".gguf").apply { writeBytes(ByteArray(bytes)); deleteOnExit() }
+        File.createTempFile("model", ".gguf").apply { writeBytes(ByteArray(bytes)); deleteOnExit() }
 
     private fun specOf(bytes: Long) = ModelSpec(
         id = "t", title = "T", family = "qwen2.5", fileName = "t.gguf",

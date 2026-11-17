@@ -262,16 +262,19 @@ class AppViewModel(
             appendLine("فایل: ${modelStore.file(spec).absolutePath}")
             appendLine("سربرگ: $fileLine")
             appendLine(
-                "دستگاه: حافظهٔ کل ${ModelFit.mb(device.totalBytes)} مگابایت، " +
-                    "آزاد ${ModelFit.mb(device.availBytes)} مگابایت (از /proc/meminfo)، " +
-                    "فضای آزاد ${ModelFit.mb(device.freeDiskBytes)} مگابایت"
+                "دستگاه: حافظهٔ کل " + Text.num(ModelFit.mb(device.totalBytes)) + " مگابایت، " +
+                    "آزاد " + Text.num(ModelFit.mb(device.availBytes)) + " مگابایت (از /proc/meminfo)، " +
+                    "فضای آزاد " + Text.num(ModelFit.mb(device.freeDiskBytes)) + " مگابایت"
             )
             appendLine(
                 "پردازه: " + if (device.is64Bit) "۶۴بیتی" else "۳۲بیتی" +
                     " — معماری‌های گوشی: " + device.abis.joinToString("، ").ifBlank { "نامعلوم" }
             )
-            appendLine("برآورد نیاز: ${ModelFit.mb(ModelFit.estimatedNeedBytes(spec.bytes))} مگابایت (تخمین)")
-            appendLine("داوری: $verdict")
+            appendLine(
+                "برآورد نیاز: " + Text.num(ModelFit.mb(ModelFit.estimatedNeedBytes(spec.bytes))) +
+                    " مگابایت (تخمین)"
+            )
+            appendLine("داوری: " + ModelFit.verdictLabel(verdict))
             append(ModelFit.explain(verdict, device, spec))
             engine.lastError?.let { appendLine().appendLine("خطای آخر موتور: $it") }
         }

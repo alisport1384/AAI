@@ -1,6 +1,7 @@
 package ir.aai.hushyar.domain
 
 import ir.aai.hushyar.core.GgufHeader
+import ir.aai.hushyar.core.Text
 
 /**
  * v0.11.2 — «مدل‌های دیگر خطای بارگذاری دارند.»
@@ -109,41 +110,56 @@ object ModelFit {
 
     fun mb(bytes: Long): Long = bytes / MB
 
+    /** Persian digits for every number that reaches the user (the app is Persian-only). */
+    private fun fa(bytes: Long): String = Text.num(mb(bytes))
+
     /** One sentence with the numbers it was decided from — never a verdict without evidence. */
     fun explain(verdict: FitVerdict, device: DeviceMemory, spec: ModelSpec): String {
-        val file = "${mb(spec.bytes)} مگابایت"
+        val file = fa(spec.bytes) + " مگابایت"
         val mem = if (device.totalBytes > 0) {
-            "حافظهٔ آزاد ${mb(device.availBytes)} از ${mb(device.totalBytes)} مگابایت"
+            "حافظهٔ آزاد " + fa(device.availBytes) + " از " + fa(device.totalBytes) + " مگابایت"
         } else {
             "حافظه اندازه‌گیری نشد"
         }
-        val disk = "فضای آزاد ${mb(device.freeDiskBytes)} مگابایت"
+        val disk = "فضای آزاد " + fa(device.freeDiskBytes) + " مگابایت"
+        val need = fa(ModelFit.estimatedNeedBytes(spec.bytes))
         return when (verdict) {
             FitVerdict.FITS ->
                 "«${spec.title}»: فایل $file، $mem، $disk، پردازه ${bits(device)} — " +
                     "روی این دستگاه جا می‌شود."
             FitVerdict.TIGHT ->
                 "«${spec.title}»: فایل $file، $mem، پردازه ${bits(device)} — تنگ است. " +
-                    "برآورد نیاز ${mb(estimatedNeedBytes(spec.bytes))} مگابایت است؛ ممکن است بارگذاری " +
-                    "شود ولی کند باشد یا سیستم اپ را ببندد."
+                    "برآورد نیاز $need مگابایت است؛ ممکن است بارگذاری شود ولی کند باشد یا سیستم اپ را ببندد."
             FitVerdict.THIRTY_TWO_BIT ->
                 "«${spec.title}»: فایل $file و پردازهٔ این اپ **۳۲بیتی** است ($mem). " +
-                    "یک پردازهٔ ۳۲بیتی نمی‌تواند نقشهٔ حافظهٔ یک گیگابایت به بالا را با خیال راحت " +
-                    "باز کند؛ سقف مطمئن $SAFE_32BIT_MB_TEXT مگابایت است. علت شکست بارگذاری همین است و " +
-                    "با تنظیمات اپ درست نمی‌شود — مدلی تا ${SAFE_32BIT_MB_TEXT} مگابایت انتخاب کن یا " +
-                    "نسخهٔ ۶۴بیتی اپ را نصب کن."
+                    "یک پردازهٔ ۳۲بیتی نمی‌تواند نقشهٔ حافظهٔ یک گیگابایت به بالا را با خیال راحت باز " +
+                    "کند؛ سقف مطمئن $safe32 مگابایت است. علت شکست بارگذاری همین است و با تنظیمات اپ " +
+                    "درست نمی‌شود — مدلی تا $safe32 مگابایت انتخاب کن یا نسخهٔ ۶۴بیتی اپ را نصب کن."
             FitVerdict.LOW_RAM ->
-                "«${spec.title}»: فایل $file، $mem و برآورد نیاز ${mb(estimatedNeedBytes(spec.bytes))} " +
-                    "مگابایت. حافظهٔ آزاد کافی نیست؛ چند اپ را ببند و دوباره «بارگذاری در حافظه» را بزن."
+                "«${spec.title}»: فایل $file، $mem و برآورد نیاز $need مگابایت. حافظهٔ آزاد کافی " +
+                    "نیست؛ چند اپ را ببند و دوباره «بارگذاری در حافظه» را بزن."
             FitVerdict.NO_DISK ->
-                "«${spec.title}»: برای دانلود $file، فضای آزاد ${mb(device.freeDiskBytes)} مگابایت " +
-                    "است؛ جا نیست."
+                "«${spec.title}»: برای دانلود $file، فضای آزاد " + fa(device.freeDiskBytes) +
+                    " مگابایت است؛ جا نیست."
             FitVerdict.UNKNOWN_ARCH ->
                 "«${spec.title}»: معماری این فایل در موتور همراهِ اپ شناخته نمی‌شود. " +
                     "موتور این معماری‌ها را می‌شناسد: ${SUPPORTED_ARCH.sorted().joinToString("، ")}."
             FitVerdict.UNKNOWN ->
                 "«${spec.title}»: اندازه‌های دستگاه خوانده نشد، پس داوری نمی‌کنیم؛ فایل $file است."
         }
+    }
+
+    private val safe32: String get() = Text.num(mb(SAFE_32BIT_BYTES))
+
+    /** The verdict as the user should read it — never an English enum name in a Persian app. */
+    fun verdictLabel(verdict: FitVerdict): String = when (verdict) {
+        FitVerdict.FITS -> "جا می‌شود"
+        FitVerdict.TIGHT -> "تنگ است"
+        FitVerdict.THIRTY_TWO_BIT -> "پردازهٔ ۳۲بیتی"
+        FitVerdict.LOW_RAM -> "حافظهٔ آزاد کم"
+        FitVerdict.NO_DISK -> "فضای دیسک کم"
+        FitVerdict.UNKNOWN_ARCH -> "معماری ناشناخته"
+        FitVerdict.UNKNOWN -> "اندازه‌گیری نشد"
     }
 
     val SAFE_32BIT_MB_TEXT: Long get() = mb(SAFE_32BIT_BYTES)
@@ -158,14 +174,15 @@ object ModelFit {
         val verdict = verdict(device, spec.bytes, installed)
         return when (verdict) {
             FitVerdict.FITS, FitVerdict.UNKNOWN -> null
-            FitVerdict.TIGHT -> "روی این دستگاه تنگ است: ${mb(estimatedNeedBytes(spec.bytes))} مگابایت " +
-                "برآورد نیاز، ${mb(device.availBytes)} مگابایت آزاد."
+            FitVerdict.TIGHT -> "روی این دستگاه تنگ است: " + fa(estimatedNeedBytes(spec.bytes)) +
+                " مگابایت برآورد نیاز، " + fa(device.availBytes) + " مگابایت آزاد."
             FitVerdict.THIRTY_TWO_BIT -> "روی این دستگاه بارگذاری نمی‌شود: پردازهٔ اپ ۳۲بیتی است و " +
-                "فایل ${mb(spec.bytes)} مگابایتی بزرگ‌تر از سقف مطمئن $SAFE_32BIT_MB_TEXT مگابایت است."
-            FitVerdict.LOW_RAM -> "روی این دستگاه بارگذاری نمی‌شود: ${mb(device.availBytes)} مگابایت " +
-                "حافظهٔ آزاد است و برآورد نیاز ${mb(estimatedNeedBytes(spec.bytes))} مگابایت."
-            FitVerdict.NO_DISK -> "جا نیست: ${mb(device.freeDiskBytes)} مگابایت آزاد، " +
-                "${mb(spec.bytes)} مگابایت لازم."
+                "فایل " + fa(spec.bytes) + " مگابایتی بزرگ‌تر از سقف مطمئن $safe32 مگابایت است."
+            FitVerdict.LOW_RAM -> "روی این دستگاه بارگذاری نمی‌شود: " + fa(device.availBytes) +
+                " مگابایت حافظهٔ آزاد است و برآورد نیاز " + fa(estimatedNeedBytes(spec.bytes)) +
+                " مگابایت."
+            FitVerdict.NO_DISK -> "جا نیست: " + fa(device.freeDiskBytes) + " مگابایت آزاد، " +
+                fa(spec.bytes) + " مگابایت لازم."
             FitVerdict.UNKNOWN_ARCH -> "معماری این فایل در موتور همراه اپ شناخته نمی‌شود."
         }
     }
@@ -176,7 +193,8 @@ object ModelFit {
      */
     fun failureReport(device: DeviceMemory, spec: ModelSpec, header: GgufHeader?): String {
         val fileLine = if (header != null) {
-            header.describe() + (if (header.singleFile) "" else " — ولی فایل چندتکه است (split.count=${header.splitCount}).")
+            header.describe() +
+                (if (header.singleFile) "" else " — ولی فایل چندتکه است (split.count=${header.splitCount}).")
         } else {
             "سربرگ GGUF خوانده نشد؛ فایل ممکن است ناقص یا مال مدل دیگری باشد."
         }
@@ -184,7 +202,10 @@ object ModelFit {
         return buildString {
             appendLine(fileLine)
             appendLine(explain(verdict, device, spec))
-            append("موتور پیام کلی «llama_model_load_from_file failed» می‌دهد؛ عددهای بالا از خود فایل و از گوشی خوانده شده‌اند.")
+            append(
+                "موتور پیام کلی «llama_model_load_from_file failed» می‌دهد؛ عددهای بالا از خود فایل " +
+                    "و از گوشی خوانده شده‌اند."
+            )
         }
     }
 }
