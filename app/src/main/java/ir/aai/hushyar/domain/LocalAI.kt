@@ -330,8 +330,20 @@ object LocalPrompt {
         }
     }
 
-    fun groundedRewrite(spec: ModelSpec, lang: String, draft: AnswerDraft): String =
-        chat(spec.family, system(lang), groundedUser(lang, draft), example(lang))
+    fun groundedRewrite(
+        spec: ModelSpec,
+        lang: String,
+        draft: AnswerDraft,
+        directive: String = ""
+    ): String = chat(spec.family, systemWithDirective(lang, directive), groundedUser(lang, draft), example(lang))
+
+    /** «هدف/محیط/پرامپت کلی» کاربر، پیش از قاعده‌های ثابتِ شاهد و عدد. */
+    fun systemWithDirective(lang: String, directive: String): String {
+        val base = system(lang)
+        val d = directive.trim()
+        if (d.isEmpty()) return base
+        return d + "\n\n" + base
+    }
 
     /**
      * Removes a leading `thinking` block some models (Qwen3, DeepSeek distill) emit.
@@ -490,7 +502,9 @@ class LocalPhraser(
     private val generator: LocalGenerator,
     private val spec: ModelSpec = ModelCatalog.recommended,
     private val fallback: Phraser = TemplatePhraser(lang),
-    private val maxTokens: Int = 160
+    private val maxTokens: Int = 160,
+    /** v0.12: دستور کلی کاربر از صفحهٔ بک‌اند (هدف/محیط/پرامپت) — پیش از دستور پیش‌فرض. */
+    private val directive: String = ""
 ) : Phraser {
 
     var lastVerdict: Verdict? = null
@@ -504,7 +518,9 @@ class LocalPhraser(
             return withTrace(fallback.render(draft), "phraser: قالب (${why})")
         }
 
-        val prompt = LocalPrompt.groundedRewrite(spec, lang, draft)
+        // v0.12: the user's own directive (goal + environment + global prompt) leads the
+        // instructions. It can never change the numbers or the evidence rules — those come after it.
+        val prompt = LocalPrompt.groundedRewrite(spec, lang, draft, directive)
         val generation = generator.generate(prompt, maxTokens)
         val text = generation.text?.trim().orEmpty()
         val verdict = if (text.isEmpty()) {

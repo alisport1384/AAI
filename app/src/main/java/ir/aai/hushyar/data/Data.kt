@@ -216,6 +216,8 @@ class Db(context: Context) : SQLiteOpenHelper(context, NAME, null, VERSION) {
     }
 }
 
+const val KEY_LOG_ENABLED = "log.enabled"
+
 class Repos(private val db: Db) {
 
     private val now: Long get() = System.currentTimeMillis()
@@ -856,6 +858,21 @@ class Repos(private val db: Db) {
         db.writableDatabase.insertWithOnConflict("preference", null, values, SQLiteDatabase.CONFLICT_REPLACE)
     }
 
+    fun loggingEnabled(): Boolean = preference(KEY_LOG_ENABLED) == "1"
+
+    fun setLogging(enabled: Boolean) = putPreference(KEY_LOG_ENABLED, if (enabled) "1" else "0")
+
+    /** تعداد خطوط لاگ ذخیره‌شده، برای نمایش در بک‌اند. */
+    fun auditCount(): Int = runCatching {
+        db.readableDatabase.rawQuery("SELECT COUNT(*) FROM audit", null).use { c ->
+            if (c.moveToFirst()) c.getInt(0) else 0
+        }
+    }.getOrDefault(0)
+
+    fun clearAudit() {
+        runCatching { db.writableDatabase.delete("audit", null, null) }
+    }
+
     fun preference(key: String): String? {
         db.readableDatabase.query("preference", arrayOf("v"), "k = ?", arrayOf(key), null, null, null).use { c ->
             if (!c.moveToFirst()) return null
@@ -865,7 +882,15 @@ class Repos(private val db: Db) {
 
     // ---------- audit ----------
 
+    /**
+     * v0.12 — لاگ پیش‌فرض خاموش است.
+     *
+     * کاربر: «لاگ را قدرتمندتر کن و در پیش‌فرض خاموش باشد؛ اگر نیاز به لاگ‌گیری بود روشن می‌کنیم.»
+     * پس نوشتن در جدول `audit` تا وقتی کلید `log.enabled` برابر «1» نشود انجام نمی‌شود. هیچ
+     * چیز دیگری از کار نمی‌افتد: حافظه، دانش، امتیازها و پاسخ‌ها همه سر جای خود هستند.
+     */
     fun audit(actor: String, action: String, target: String, detail: String) {
+        if (!loggingEnabled()) return
         val values = ContentValues().apply {
             put("at", now)
             put("actor", actor)

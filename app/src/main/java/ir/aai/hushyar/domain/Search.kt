@@ -17,7 +17,7 @@ import ir.aai.hushyar.core.Text
  * the engine itself. Parsing is engine-agnostic and lives in [SerpParser]; when an engine
  * changes its markup the adapter survives and only the generic filter is adjusted.
  */
-enum class EngineKind { GENERAL, WIKI, META, PERSIAN, SPECIALIST }
+enum class EngineKind { GENERAL, WIKI, META, PERSIAN, SPECIALIST, USER, COMMERCE }
 
 /** Wire format of one endpoint. Chosen per engine from what the endpoint actually returns. */
 enum class SerpFormat { HTML, RSS, JSON }
@@ -59,6 +59,8 @@ data class EngineSpec(
     val template: String,
     val hosts: List<String>,
     val kind: EngineKind = EngineKind.GENERAL,
+    /** Wire format of the *primary* endpoint; the fallbacks carry their own. */
+    val format: SerpFormat = SerpFormat.HTML,
     val needsJs: Boolean = false,
     val friction: Int = 2,
     val note: String = "",
@@ -70,7 +72,7 @@ data class EngineSpec(
 ) {
     /** Primary first, then the alternates. */
     val endpoints: List<Endpoint>
-        get() = listOf(Endpoint(template, SerpFormat.HTML)) + fallbacks
+        get() = listOf(Endpoint(template, format, note)) + fallbacks
 
     fun url(query: String, langTag: String): String = render(template, query, langTag)
 
@@ -79,9 +81,11 @@ data class EngineSpec(
         val fa = langTag == "fa"
         val hl = if (fa) "fa" else "en"
         val gl = if (fa) "ir" else "us"
+        val mkt = if (fa) "fa-IR" else "en-US"
         return template.replace("{q}", encoded)
             .replace("{hl}", hl)
             .replace("{gl}", gl)
+            .replace("{mkt}", mkt)
             .replace("{ceid}", "${gl.uppercase()}:$hl")
     }
 }
@@ -106,7 +110,8 @@ object Engines {
             "google", "Google", "https://www.google.com/search?num=10&hl={hl}&gl={gl}&q={q}&udm=14",
             listOf("google.com", "google.co", "gstatic.com", "googleusercontent.com"),
             kind = EngineKind.GENERAL, friction = 0, needsJs = true,
-            note = "صفحهٔ وب گوگل بدون جاوااسکریپت نتیجه نمی‌دهد؛ مسیر جانشین، خوراک گوگل‌نیوز است",
+            note = "سنجیده‌شده ۲۰۲۶-۱۱-۱۷: صفحهٔ HTML گوگل پوستهٔ جاوااسکریپت است (۱ لینک، «enablejs»)؛ " +
+                "مسیر جانشینی که واقعاً نتیجه می‌دهد خوراک گوگل‌نیوز است",
             fallbacks = listOf(
                 Endpoint(
                     "https://news.google.com/rss/search?q={q}&hl={hl}&gl={gl}&ceid={ceid}",
@@ -129,14 +134,33 @@ object Engines {
             listOf("mojeek.com"), friction = 3,
             note = "ایندکس مستقل؛ از IP مرکز داده ۴۰۳ می‌دهد (سنجیده‌شده) — از شبکهٔ موبایل معمولاً باز است"
         ),
+        // ---- دانش‌نامه: API عمومی، بدون کلید، JSON واقعی (بهترین منبع برای تعریف) ----
         EngineSpec(
-            "wikipedia-fa", "ویکی‌پدیا (fa)", "https://fa.wikipedia.org/w/index.php?search={q}&ns0=1",
-            listOf("wikipedia.org", "wikimedia.org"), kind = EngineKind.WIKI, friction = 1,
-            note = "برای تعریف و پیشینه بهتر از هر موتور دیگری"
+            "wikipedia-fa", "ویکی‌پدیا (fa)",
+            "https://fa.wikipedia.org/w/api.php?action=query&format=json&list=search&srsearch={q}&srlimit=10",
+            listOf("wikipedia.org", "wikimedia.org"), kind = EngineKind.WIKI, friction = 0,
+            format = SerpFormat.JSON,
+            note = "API رسمی ویکی‌پدیا؛ JSON، بدون کلید، سنجیده‌شده",
+            fallbacks = listOf(
+                Endpoint(
+                    "https://fa.wikipedia.org/w/index.php?search={q}&ns0=1",
+                    SerpFormat.HTML,
+                    "صفحهٔ جستجوی ویکی‌پدیا"
+                )
+            )
         ),
         EngineSpec(
-            "wikipedia-en", "Wikipedia (en)", "https://en.wikipedia.org/w/index.php?search={q}&ns0=1",
-            listOf("wikipedia.org", "wikimedia.org"), kind = EngineKind.WIKI, friction = 1
+            "wikipedia-en", "Wikipedia (en)",
+            "https://en.wikipedia.org/w/api.php?action=query&format=json&list=search&srsearch={q}&srlimit=10",
+            listOf("wikipedia.org", "wikimedia.org"), kind = EngineKind.WIKI, friction = 0,
+            format = SerpFormat.JSON,
+            fallbacks = listOf(
+                Endpoint(
+                    "https://en.wikipedia.org/w/index.php?search={q}&ns0=1",
+                    SerpFormat.HTML,
+                    "Wikipedia search page"
+                )
+            )
         ),
         EngineSpec(
             "marginalia", "Marginalia", "https://search.marginalia.nu/search?query={q}",
@@ -144,15 +168,21 @@ object Engines {
             friction = 1, note = "متن‌محور؛ برای موضوع‌های فنی خوب است"
         ),
         // ---- mixed ----
+        // ---- v0.12: ریشهٔ «جستجو کار نمی‌کند» پیدا شد ----
+        //
+        // Bing بدون پارامتر `mkt` صفحه‌ای می‌دهد که **هیچ بلوک نتیجه‌ای** در آن نیست
+        // (سنجیده‌شده ۲۰۲۶-۱۱-۱۷: `b_algo` = ۰، با هر User-Agent — از جمله همین UA صادق اپ).
+        // با `mkt=fa-IR` همان درخواست ۵ تا ۱۰ نتیجهٔ واقعی فارسی می‌دهد. پارامتر `setlang`
+        // به‌تنهایی هیچ اثری ندارد. این یک خط، مشکل اصلی جستجوی فارسی بود.
         EngineSpec(
-            "bing", "Bing", "https://www.bing.com/search?count=10&setlang={hl}&q={q}",
-            listOf("bing.com", "microsoft.com", "msn.com"), friction = 2,
-            note = "HTML معمولاً جواب می‌دهد؛ اگر نه، خروجی RSS همان جستجو",
+            "bing", "Bing", "https://www.bing.com/search?q={q}&count=20&mkt={mkt}",
+            listOf("bing.com", "microsoft.com", "msn.com"), friction = 0,
+            note = "سنجیده‌شده: با mkt=fa-IR نتیجهٔ واقعی می‌دهد؛ بدون آن هیچ نتیجه‌ای",
             fallbacks = listOf(
                 Endpoint(
-                    "https://www.bing.com/search?q={q}&format=rss&count=20",
+                    "https://www.bing.com/search?q={q}&count=20&mkt={mkt}&format=rss",
                     SerpFormat.RSS,
-                    "سنجیده‌شده ۲۰۲۶-۱۱-۱۷: ۲۰۰ با ۱۰–۱۲ نتیجه، ۵ کیلوبایت، فارسی و انگلیسی"
+                    "خوراک RSS همان جستجو (سنجیده‌شده: ۲۰۰، فارسی)"
                 )
             )
         ),
@@ -184,7 +214,8 @@ object Engines {
         ),
         EngineSpec(
             "dogpile", "Dogpile", "https://www.dogpile.com/serp?q={q}",
-            listOf("dogpile.com", "infospace.com"), kind = EngineKind.META, friction = 2
+            listOf("dogpile.com", "infospace.com"), kind = EngineKind.META, friction = 1,
+            note = "متاجستجو (نتایج Bing)؛ سنجیده‌شده: ۲۰۰ با نتیجهٔ بیرونی، بدون کلید"
         ),
         EngineSpec(
             "stract", "Stract", "https://stract.com/search?q={q}",
@@ -213,11 +244,13 @@ object Engines {
         EngineSpec(
             "parsijoo", "پارسی‌جو", "https://parsijoo.ir/search/?q={q}",
             listOf("parsijoo.ir"), kind = EngineKind.PERSIAN, friction = 3,
-            note = "موتور ایرانی؛ بی‌جاوااسکریپت نیست ولی صفحهٔ HTML می‌دهد"
+            note = "موتور ایرانی؛ از این شبکه (مرکز داده) DNS/SSL پاسخ نداد — از شبکهٔ ایران " +
+                "به‌احتمال زیاد باز است، پس یک بار امتحان می‌شود"
         ),
         EngineSpec(
             "yooz", "یوز", "https://yooz.ir/search/?q={q}",
-            listOf("yooz.ir"), kind = EngineKind.PERSIAN, friction = 3
+            listOf("yooz.ir"), kind = EngineKind.PERSIAN, friction = 3,
+            note = "موتور ایرانی؛ از این شبکه DNS پاسخ نداد (سنجیده‌شده)"
         ),
         // ---- usually blocked or JavaScript-only: kept last, still worth one try ----
 
@@ -236,7 +269,8 @@ object Engines {
         ),
         EngineSpec(
             "swisscows", "Swisscows", "https://swisscows.com/web?query={q}",
-            listOf("swisscows.com"), friction = 3, needsJs = true
+            listOf("swisscows.com"), friction = 1,
+            note = "سنجیده‌شده: ۲۰۰ با ۱۴ لینک بیرونی (HTML سرور، بدون نیاز به JS)"
         ),
         EngineSpec(
             "ask", "Ask", "https://www.ask.com/web?q={q}",
@@ -247,6 +281,74 @@ object Engines {
             listOf("presearch.com"), friction = 3, needsJs = true
         )
     )
+
+    /**
+     * v0.12 — «منابع من»: کاربر در صفحهٔ بک‌اند می‌تواند هر سایتی را با یک قالب جستجو اضافه کند،
+     * مثلاً `https://www.digikala.com/search/?q={q}` یا `https://torob.com/search/?query={q}`.
+     * این‌ها **داده** هستند نه کد: هیچ کالا و هیچ فروشگاهی در برنامه هارد‌کد نشده است.
+     * منابع کاربر با بیشترین اولویت پرسیده می‌شوند، چون خودش می‌داند کدام منبع برای کارش معتبر است.
+     */
+    data class UserSource(
+        val title: String,
+        val template: String,
+        val format: SerpFormat = SerpFormat.HTML,
+        val enabled: Boolean = true
+    ) {
+        val id: String get() = "user:" + title.lowercase().replace(Regex("[^\\p{L}\\p{N}]+"), "-").take(24)
+
+        fun valid(): Boolean =
+            enabled && title.isNotBlank() && template.startsWith("https://") && template.contains("{q}")
+
+        fun asEngine(): EngineSpec = EngineSpec(
+            id = id,
+            name = title,
+            template = template,
+            hosts = emptyList(),
+            kind = EngineKind.USER,
+            format = format,
+            friction = 0,
+            note = "منبع خودت (از صفحهٔ بک‌اند)"
+        )
+    }
+
+    object SourcesCodec {
+        fun encode(sources: List<UserSource>): String = MiniJson.write(
+            MiniJson.arr(
+                sources.map { source ->
+                    MiniJson.obj(
+                        "title" to MiniJson.str(source.title),
+                        "template" to MiniJson.str(source.template),
+                        "format" to MiniJson.str(source.format.name),
+                        "enabled" to MiniJson.bool(source.enabled)
+                    )
+                }
+            )
+        )
+
+        fun decode(text: String?): List<UserSource> {
+            if (text.isNullOrBlank()) return emptyList()
+            return runCatching {
+                MiniJson.parse(text).asObjects().mapNotNull { row ->
+                    val title = row["title"]?.asStringOrNull()?.trim().orEmpty()
+                    val template = row["template"]?.asStringOrNull()?.trim().orEmpty()
+                    if (title.isEmpty() || template.isEmpty()) return@mapNotNull null
+                    val format = runCatching {
+                        SerpFormat.valueOf(row["format"]?.asStringOrNull()?.uppercase() ?: "HTML")
+                    }.getOrDefault(SerpFormat.HTML)
+                    UserSource(
+                        title = title,
+                        template = template,
+                        format = format,
+                        enabled = row["enabled"]?.asBoolOrNull() ?: true
+                    )
+                }.filter { it.title.isNotBlank() && it.template.contains("{q}") }
+            }.getOrDefault(emptyList())
+        }
+    }
+
+    /** Built-ins in the user's chosen order, then whatever they added — user sources first. */
+    fun withUserSources(sources: List<UserSource>): List<EngineSpec> =
+        sources.filter { it.valid() }.map { it.asEngine() } + all
 
     fun byId(id: String): EngineSpec? = all.firstOrNull { it.id == id }
 
@@ -317,6 +419,13 @@ object SerpParser {
     }
 
     fun parse(engine: EngineSpec, html: String, limit: Int = 8): List<WebHit> {
+        // v0.12: engines that mark their result blocks get read block-by-block, so the title and
+        // the snippet belong to the same result. The generic anchor window stays as the fallback
+        // for engines we have not seen a real page of.
+        if (engine.id == "bing") {
+            val blocks = bingBlocks(html, limit)
+            if (blocks.isNotEmpty()) return fromBlocks(engine, blocks, html, limit)
+        }
         val out = LinkedHashMap<String, WebHit>()
         for (link in Html.links(html, engine.url("x", "fa"), limit = 120)) {
             if (out.size >= limit) break
@@ -329,6 +438,62 @@ object SerpParser {
                 url = canonical,
                 title = clean(link.text),
                 snippet = snippet,
+                engine = engine.id,
+                rank = out.size + 1
+            )
+        }
+        return out.values.toList()
+    }
+
+    /** One result as the page itself groups it: title, target, snippet. */
+    data class SerpBlock(val title: String, val url: String, val snippet: String)
+
+    private val BING_ITEM = Regex("(?is)<li class=\"b_algo\".*?</li>")
+    private val BING_ANCHOR = Regex("(?is)<a[^>]+href=\"([^\"]+)\"[^>]*>(.*?)</a>")
+    private val BING_SNIPPET = Regex("(?is)<p[^>]*>(.*?)</p>")
+
+    /**
+     * Bing groups each result in `<li class="b_algo">` with the title in `<h2><a href=…>` and the
+     * snippet in the first `<p>`. Reading those blocks means the title, the URL and the sentence
+     * under it always belong together — the generic "anchor + following text" heuristic mixed
+     * neighbours on Persian pages.
+     */
+    fun bingBlocks(html: String, limit: Int = 8): List<SerpBlock> {
+        val out = mutableListOf<SerpBlock>()
+        for (match in BING_ITEM.findAll(html)) {
+            val block = match.value
+            val anchor = BING_ANCHOR.find(block) ?: continue
+            val href = anchor.groupValues[1]
+            val title = Html.toText(anchor.groupValues[2]).replace(Regex("\\s+"), " ").trim()
+            val snippet = BING_SNIPPET.find(block)
+                ?.groupValues?.get(1)
+                ?.let { Html.toText(it).replace(Regex("\\s+"), " ").trim() }
+                .orEmpty()
+            if (title.isEmpty() || href.isEmpty()) continue
+            out.add(SerpBlock(title, href, snippet.take(240)))
+            if (out.size >= limit * 3) break
+        }
+        return out
+    }
+
+    private fun fromBlocks(
+        engine: EngineSpec,
+        blocks: List<SerpBlock>,
+        html: String,
+        limit: Int
+    ): List<WebHit> {
+        val out = LinkedHashMap<String, WebHit>()
+        for (block in blocks) {
+            if (out.size >= limit) break
+            val real = unwrapLink(block.url)
+            if (!accept(engine, real, block.title)) continue
+            val canonical = canonical(real)
+            if (out.containsKey(canonical)) continue
+            val snippet = block.snippet.ifBlank { snippetFor(html, block.url) }
+            out[canonical] = WebHit(
+                url = canonical,
+                title = clean(block.title),
+                snippet = clean(snippet).take(240),
                 engine = engine.id,
                 rank = out.size + 1
             )
@@ -639,6 +804,14 @@ class SearchCore(
     private val clock: () -> Long = { System.currentTimeMillis() }
 ) {
 
+    /**
+     * v0.12 — منابعی که کاربر در بک‌اند اضافه می‌کند، در همین نمونه گذاشته می‌شوند تا همان
+     * `SearchCore`ی که عامل (Agent) در دست دارد هم آن‌ها را ببیند. بدون این، منبع کاربر فقط در
+     * صفحهٔ تنظیمات کار می‌کرد و در پاسخ‌ها هیچ اثری نداشت.
+     */
+    @Volatile
+    var extraEngines: List<EngineSpec> = emptyList()
+
     private val failures = mutableMapOf<String, Int>()
 
     /**
@@ -697,7 +870,16 @@ class SearchCore(
         var used = 0
         var collected = 0
         var lastEngine: String? = null
-        var candidates = Engines.ordered(langTag).filter { candidate -> engines.any { it.id == candidate.id } }
+        // The caller may have added **its own** sources (v0.12): they are not in `Engines.ordered`,
+        // so ordering has to be built from the caller's list, with user sources in front.
+        val ranked = Engines.ordered(langTag)
+        val pool = (extraEngines + engines).distinctBy { it.id }
+        var candidates = pool.sortedWith(
+            compareBy<EngineSpec> {
+                if (it.kind == EngineKind.USER) -1
+                else ranked.indexOfFirst { r -> r.id == it.id }.let { i -> if (i < 0) 99 else i }
+            }
+        )
 
         // هیچ‌وقت «همه در استراحت» نداشته باش: اگر همه خواب باشند، دو تای اول یک پیش‌آزمون می‌شوند.
         // یک جستجوی خاموش بدتر از یک درخواست اضافه است، چون کاربر فکر می‌کند هوش خراب شده.
@@ -840,7 +1022,8 @@ class SearchCore(
         val clean = Text.normalize(query).trim().ifBlank { "test" }
         val out = mutableListOf<EngineProbe>()
         var first = true
-        for (engine in Engines.ordered(langTag).filter { candidate -> engines.any { it.id == candidate.id } }) {
+        val sweepPool = (extraEngines + engines).distinctBy { it.id }
+        for (engine in sweepPool.sortedWith(compareBy<EngineSpec> { if (it.kind == EngineKind.USER) -1 else Engines.ordered(langTag).indexOfFirst { r -> r.id == it.id }.let { i -> if (i < 0) 99 else i } })) {
             if (!first) sleep(pacing)
             first = false
             val answer = ask(engine, clean, langTag, limitPerEngine)

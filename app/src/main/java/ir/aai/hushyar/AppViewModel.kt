@@ -69,6 +69,8 @@ import ir.aai.hushyar.domain.PackCodec
 import ir.aai.hushyar.domain.ProductGroup
 import ir.aai.hushyar.domain.QaEngine
 import ir.aai.hushyar.domain.SearchCore
+import ir.aai.hushyar.domain.EngineProbe
+import ir.aai.hushyar.domain.Engines
 import ir.aai.hushyar.domain.Resolver
 import ir.aai.hushyar.domain.SelfManifest
 import ir.aai.hushyar.domain.SelfModel
@@ -186,6 +188,32 @@ class AppViewModel(
     var modelReport by mutableStateOf<String?>(null)
         private set
 
+    // ---------- v0.12: صفحهٔ بک‌اند — هدف، محیط، پرامپت کلی، منابع، لاگ ----------
+
+    var goalText by mutableStateOf("")
+        private set
+    var environmentText by mutableStateOf("")
+        private set
+    var directiveText by mutableStateOf("")
+        private set
+    var sources by mutableStateOf<List<Engines.UserSource>>(emptyList())
+        private set
+    var probes by mutableStateOf<List<EngineProbe>>(emptyList())
+        private set
+    var probing by mutableStateOf(false)
+        private set
+    var logging by mutableStateOf(false)
+        private set
+    var logLines by mutableStateOf<List<ir.aai.hushyar.domain.AuditEntry>>(emptyList())
+        private set
+
+    private companion object {
+        const val KEY_GOAL = "backend.goal"
+        const val KEY_ENV = "backend.environment"
+        const val KEY_DIRECTIVE = "backend.directive"
+        const val KEY_SOURCES = "search.sources"
+    }
+
     private val modelStore = ModelStore(store.modelsDir())
     private val installer = ModelInstaller(modelStore, HttpModelFetcher())
     private val transfer = ModelTransfer(modelStore)
@@ -195,13 +223,124 @@ class AppViewModel(
     @Volatile private var downloading = false
 
     private val qa = QaEngine()
-    private val search = SearchCore(HttpUrlTransport())
+    /**
+     * v0.12 — منابع جستجو: پیش‌فرض‌های خودمان + هر منبعی که کاربر در بک‌اند اضافه کند.
+     * منابع کاربر با اولویت پرسیده می‌شوند (خودش می‌داند کدام سایت برای کارش معتبر است).
+     */
+    private fun userSources(): List<Engines.UserSource> =
+        runCatching { Engines.SourcesCodec.decode(repos.preference(KEY_SOURCES)) }.getOrDefault(emptyList())
+
+    @Volatile private var sourceEpoch = 0
+
+    private val search = SearchCore(HttpUrlTransport(), engines = Engines.all)
     private val tools = AndroidTools(repos, store, search)
     private val proactive = ProactiveRunner(repos, tools)
 
     init {
         refresh()
         refreshLocal()
+        reloadBackend()
+    }
+
+    /** Reads the backend page's settings (goal / environment / global prompt / sources / logging). */
+    fun reloadBackend() {
+        goalText = repos.preference(KEY_GOAL).orEmpty()
+        environmentText = repos.preference(KEY_ENV).orEmpty()
+        directiveText = repos.preference(KEY_DIRECTIVE).orEmpty()
+        sources = userSources()
+        repoSearch()
+        logging = repos.loggingEnabled()
+        logLines = if (logging) runCatching { repos.audits(120) }.getOrDefault(emptyList()) else emptyList()
+    }
+
+    fun saveBackend(goal: String, environment: String, directive: String) {
+        repos.putPreference(KEY_GOAL, goal.trim())
+        repos.putPreference(KEY_ENV, environment.trim())
+        repos.putPreference(KEY_DIRECTIVE, directive.trim())
+        goalText = goal.trim()
+        environmentText = environment.trim()
+        directiveText = directive.trim()
+        repos.audit("user", "backend.save", "goal", goal.trim().take(120))
+        notice = "هدف، محیط و پرامپت کلی ذخیره شد."
+    }
+
+    /** The one string the local model sees before its own rules (v0.12). */
+    fun directive(): String = listOf(
+        goalText.takeIf { it.isNotBlank() }?.let { "هدف من: $it" },
+        environmentText.takeIf { it.isNotBlank() }?.let { "محیط کار من: $it" },
+        directiveText.takeIf { it.isNotBlank() }
+    ).filterNotNull().joinToString("\n")
+
+    fun addSource(title: String, template: String, format: String): String? {
+        val source = Engines.UserSource(
+            title = title.trim(),
+            template = template.trim(),
+            format = runCatching { ir.aai.hushyar.domain.SerpFormat.valueOf(format.uppercase()) }
+                .getOrDefault(ir.aai.hushyar.domain.SerpFormat.HTML)
+        )
+        if (!source.valid()) {
+            return "منبع پذیرفته نشد: عنوان لازم است، نشانی باید با https:// شروع شود و {q} داشته باشد."
+        }
+        val next = (sources + source).distinctBy { it.id }
+        persistSources(next)
+        return null
+    }
+
+    fun removeSource(id: String) {
+        persistSources(sources.filterNot { it.id == id })
+    }
+
+    fun toggleSource(id: String) {
+        persistSources(sources.map { if (it.id == id) it.copy(enabled = !it.enabled) else it })
+    }
+
+    private fun persistSources(next: List<Engines.UserSource>) {
+        repos.putPreference(KEY_SOURCES, Engines.SourcesCodec.encode(next))
+        sources = next
+        sourceEpoch++
+        repoSearch()
+        repos.audit("user", "sources.save", "${next.size}", next.joinToString("،") { it.title })
+    }
+
+    /** Pushes the user's sources into the one search core the agent already holds. */
+    private fun repoSearch() {
+        search.extraEngines = sources.filter { it.valid() }.map { it.asEngine() }
+    }
+
+    /** Asks every engine one question and records who answered — on *this* network. */
+    fun probeEngines() {
+        if (probing) return
+        probing = true
+        viewModelScope.launch {
+            val rows = withContext(Dispatchers.IO) {
+                runCatching { search.probe("قیمت تیشرت نخی", "fa", 5) }.getOrDefault(emptyList())
+            }
+            probes = rows
+            probing = false
+            val ok = rows.count { it.ok }
+            notice = "پویش موتورها: $ok از ${rows.size} موتور روی این شبکه پاسخ دادند."
+        }
+    }
+
+    fun setLogging(on: Boolean) {
+        repos.setLogging(on)
+        logging = on
+        logLines = if (on) runCatching { repos.audits(120) }.getOrDefault(emptyList()) else emptyList()
+        notice = if (on) {
+            "لاگ روشن شد؛ رویدادهای تازه ذخیره می‌شوند."
+        } else {
+            "لاگ خاموش است؛ هیچ رویدادی ذخیره نمی‌شود."
+        }
+    }
+
+    fun clearLog() {
+        repos.clearAudit()
+        logLines = emptyList()
+        notice = "لاگ پاک شد."
+    }
+
+    fun refreshLog() {
+        logLines = if (logging) runCatching { repos.audits(120) }.getOrDefault(emptyList()) else emptyList()
     }
 
     fun clearNotice() {
@@ -851,7 +990,7 @@ class AppViewModel(
             val spec = localModel.spec
             val phraserFactory: (String) -> ir.aai.hushyar.domain.Phraser = { lang ->
                 if (localModel.usingForAnswers && engine.ready) {
-                    LocalPhraser(lang, engine, spec)
+                    LocalPhraser(lang, engine, spec, directive = directive())
                 } else {
                     TemplatePhraser(lang)
                 }

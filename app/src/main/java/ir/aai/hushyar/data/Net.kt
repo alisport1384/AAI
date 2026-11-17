@@ -64,9 +64,33 @@ class HttpUrlTransport(private val maxBytes: Int = 800_000) : HttpTransport {
     private fun charsetOf(contentType: String?): String? =
         contentType?.let { Regex("(?i)charset=([\\w-]+)").find(it)?.groupValues?.get(1) }
 
+    /**
+     * v0.12 — چرا بعضی صفحه‌های فارسی «توی‌هم‌ریخته» می‌آمدند: خیلی از سایت‌های ایرانی charset را
+     * فقط در `<meta>` اعلام می‌کنند، نه در سربرگ `Content-Type`. با UTF-8 خواندنِ آن‌ها متن را
+     * خراب می‌کرد («ØªÛØ´Ø±Øª») و بعد جستجو «بی‌نتیجه» به نظر می‌رسید. حالا ترتیب: سربرگ، بعد
+     * `<meta charset>`/`<meta http-equiv ... charset=>` در ۲ کیلوبایت اول، بعد UTF-8.
+     */
     private fun decode(bytes: ByteArray, charset: String?): String {
-        val name = charset ?: "UTF-8"
-        return runCatching { String(bytes, charset(name)) }.getOrElse { String(bytes, Charsets.UTF_8) }
+        val fromHeader = charset?.let { runCatching { charset(it) }.getOrNull() }
+        val name = fromHeader?.name() ?: sniffCharset(bytes) ?: "UTF-8"
+        return runCatching { String(bytes, charset(name)) }
+            .recoverCatching { String(bytes, charset("windows-1256")) }
+            .getOrElse { String(bytes, Charsets.UTF_8) }
+    }
+
+    /** Reads `<meta charset=…>` / `http-equiv` from the first two kilobytes. */
+    internal fun sniffCharset(bytes: ByteArray): String? {
+        val head = String(bytes, 0, minOf(bytes.size, 2048), Charsets.ISO_8859_1)
+        val direct = Regex("(?i)<meta[^>]+charset\\s*=\\s*[\"']?([a-z0-9_\\-]+)").find(head)
+        val value = direct?.groupValues?.get(1)?.lowercase()
+        return when {
+            value == null -> null
+            value.contains("1256") -> "windows-1256"
+            value.contains("utf") -> "UTF-8"
+            value.contains("8859-1") -> "ISO-8859-1"
+            value == "cp1256" -> "windows-1256"
+            else -> null
+        }
     }
 
     companion object {

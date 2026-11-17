@@ -43,9 +43,9 @@ import ir.aai.hushyar.domain.ProductGroup
 
 enum class Tab(val label: String, val icon: String) {
     Home("خانه", "◈"),
-    Data("داده", "▤"),
     Ask("پرسش", "؟"),
-    Self("خودم", "◎")
+    Data("دانش", "▤"),
+    Backend("بک‌اند", "⚙")
 }
 
 @Composable
@@ -76,7 +76,7 @@ fun AppRoot(vm: AppViewModel) {
                 tab == Tab.Home -> HomeScreen(vm)
                 tab == Tab.Data -> DataScreen(vm)
                 tab == Tab.Ask -> AskScreen(vm)
-                else -> SelfScreen(vm)
+                else -> BackendScreen(vm)
             }
 
             vm.notice?.let { message ->
