@@ -98,6 +98,46 @@ object ModelCatalog {
             note = "بهترین کیفیت فارسی این فهرست، ولی ۱٫۱ گیگابایت دانلود و حدود ۲ گیگابایت RAM؛ " +
                 "برای گوشی‌های جدید. کارکرد بدون آن هم کامل است."
         )
+        // ---- v0.11: مدل‌های بزرگ‌تر. اندازه و SHA-256 همه از API خودِ HuggingFace خوانده شده ----
+        ModelSpec(
+            id = "gemma-3-1b-q4km",
+            title = "Gemma 3 1B Instruct (Q4_K_M)",
+            family = "gemma3",
+            fileName = "gemma-3-1b-it-Q4_K_M.gguf",
+            url = "$HOST/unsloth/gemma-3-1b-it-GGUF/resolve/main/gemma-3-1b-it-Q4_K_M.gguf",
+            bytes = 806_058_272L,
+            sha256 = "8270790f3ab69fdfe860b7b64008d9a19986d8df7e407bb018184caa08798ebd",
+            contextTokens = 32_768,
+            license = "Gemma Terms of Use",
+            note = "گام بعدی بعد از ۲۷۰M: ۱ میلیارد پارامتر، ۸۰۶ مگابایت. فارسی را بهتر می‌فهمد و " +
+                "برای «انتخاب کار» و «استخراج ویژگی» قابل اتکاتر است. حدود ۱٫۵ گیگابایت RAM."
+        ),
+        ModelSpec(
+            id = "qwen3-1.7b-q4km",
+            title = "Qwen3 1.7B (Q4_K_M)",
+            family = "qwen2.5",
+            fileName = "Qwen3-1.7B-Q4_K_M.gguf",
+            url = "$HOST/unsloth/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q4_K_M.gguf",
+            bytes = 1_107_409_472L,
+            sha256 = "b139949c5bd74937ad8ed8c8cf3d9ffb1e99c866c823204dc42c0d91fa181897",
+            contextTokens = 32_768,
+            license = "Apache-2.0",
+            note = "۱٫۷ میلیارد پارامتر، ۱٫۱ گیگابایت، مجوز Apache-2.0. برای گوشی‌های ۴ گیگابایت " +
+                "به بالا؛ سرعت چند توکن در ثانیه است، پس برای تصمیم و استخراج ساخته شده نه نوشتن متن بلند."
+        ),
+        ModelSpec(
+            id = "llama-3.2-3b-q4km",
+            title = "Llama 3.2 3B Instruct (Q4_K_M)",
+            family = "generic",
+            fileName = "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+            url = "$HOST/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+            bytes = 2_019_377_696L,
+            sha256 = "6c1a2b41161032677be168d354123594c0e6e67d2b9227c84f296ad037c728ff",
+            contextTokens = 8_192,
+            license = "Llama 3.2 Community License",
+            note = "بزرگ‌ترین گزینهٔ فهرست: ۳ میلیارد پارامتر، ۲ گیگابایت دانلود و حدود ۳ گیگابایت " +
+                "RAM. روی گوشی ۳۲ بیتی عملاً کند است؛ فقط برای گوشی قوی. فارسی آن از Qwen ضعیف‌تر است."
+        )
     )
 
     val byId: Map<String, ModelSpec> = all.associateBy { it.id }

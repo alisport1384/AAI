@@ -644,6 +644,38 @@ class AppViewModel(
         if (question.isBlank()) return
         steps = emptyList()
         io({
+            // v0.11: «من فروشگاه تی‌شرت و شلوار هستم» یک پرسش نیست، یک معرفی است. برنامه از آن
+            // بستهٔ دانش می‌سازد و ذخیره می‌کند؛ از آن به بعد همان مسیر بی‌حوزه جواب می‌دهد.
+            val setupText = ir.aai.hushyar.domain.DomainPacks.DomainSetup.describe(question)
+            if (setupText != null) {
+                repos.putPreference(ir.aai.hushyar.domain.AnyDomainBrain.CUSTOM_DOMAIN_KEY, setupText)
+                val built = ir.aai.hushyar.domain.DomainPacks.fromDescription(setupText)
+                val entities = built?.entities?.joinToString("، ") { it.label }.orEmpty()
+                val attrs = built?.entities?.firstOrNull()?.attributes?.joinToString("، ") { it.label }.orEmpty()
+                return@io ir.aai.hushyar.domain.AgentOutcome(
+                    answer = ir.aai.hushyar.domain.Answer(
+                        intent = "domain.setup",
+                        text = "بازار تو ثبت شد: ${built?.name ?: setupText.take(40)}",
+                        bullets = listOf(
+                            "کالاها: $entities",
+                            if (attrs.isNotBlank()) "ویژگی‌هایی که دنبالشان می‌گردم: $attrs" else "",
+                            "از این به بعد قیمت و ویژگی این کالاها را می‌پرسم؛ هر چه پیدا کنم در دانش ذخیره می‌شود و دفعهٔ بعد بدون جستجو جواب می‌دهم.",
+                            "برای عوض کردنش کافی است دوباره بگویی «من فروشگاه … هستم»."
+                        ).filter { it.isNotBlank() },
+                        confidence = 0.9,
+                        lang = "fa",
+                        trace = listOf("domain.setup → بستهٔ دانش از توضیح کاربر ساخته و ذخیره شد")
+                    ),
+                    steps = listOf(
+                        ir.aai.hushyar.domain.AgentStep(
+                            1, "معرفی بازار را خواندم و بستهٔ دانش ساختم", "domain.setup",
+                            mapOf("custom" to "1"), "کالاها: $entities"
+                        )
+                    ),
+                    actions = listOf("preference.write:${ir.aai.hushyar.domain.AnyDomainBrain.CUSTOM_DOMAIN_KEY}")
+                )
+            }
+
             // v0.9: the local model is the brain. It is told the market, the standing goals and how
             // much is already stored, then chooses one action; the code below only carries it out.
             // Without a model — or when the model answers with something unusable — the same
@@ -731,7 +763,19 @@ class AppViewModel(
                     TemplatePhraser(lang)
                 }
             }
-            val agent = Agent(tools, phraserFactory)
+            // v0.11: بستهٔ دانشی که از حرف خودِ کاربر ساخته شده، و مدل محلی در نقش یادگیرنده —
+            // نه فقط بازنویس جمله.
+            val customDomain = runCatching {
+                repos.preference(ir.aai.hushyar.domain.AnyDomainBrain.CUSTOM_DOMAIN_KEY)
+                    ?.let { ir.aai.hushyar.domain.DomainPacks.fromDescription(it) }
+            }.getOrNull()
+            val learningGenerator = if (localModel.usingForAnswers && engine.ready) engine else null
+            val agent = Agent(
+                tools, phraserFactory,
+                customDomain = customDomain,
+                generator = learningGenerator,
+                modelSpec = spec
+            )
             // "Answer from what we already know" means exactly that: the web is not touched. If the
             // stored knowledge cannot carry it, the agent refuses honestly and we then allow one
             // web pass — recorded, not hidden.

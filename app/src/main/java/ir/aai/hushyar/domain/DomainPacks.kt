@@ -25,7 +25,7 @@ object DomainPacks {
         ),
         AttrDef(
             "material", "جنس", AttrKind.ENUM,
-            values = listOf("نخ پنبه", "پنبه", "پلی‌استر", "مخلوط", "ویکور", "کتان", "فلامنت"),
+            values = listOf("نخ پنبه", "نخی", "پنبه", "پلی‌استر", "مخلوط", "ویکور", "کتان", "جین", "فلامنت"),
             synonyms = listOf("جنس", "پارچه", "الیاف", "fabric", "material")
         ),
         AttrDef(
@@ -157,6 +157,24 @@ object DomainPacks {
             }
         }
         return best
+    }
+
+    /**
+     * «من فروشگاه تی‌شرت و شلوار هستم، سایز و رنگ مهم است» — این جمله نباید یک پرسش باشد؛ باید
+     * بستهٔ دانش بسازد. تشخیصش با واژه‌های کسب‌وکار است، نه با مدل، تا همیشه کار کند.
+     */
+    object DomainSetup {
+        private val TRIGGERS = listOf(
+            "فروشگاه", "مغازه", "بازار", "من میفروشم", "من می فروشم", "کار من",
+            "شغل من", "تولید میکنم", "تولید می کنم", "shop", "store", "business"
+        )
+
+        fun describe(question: String): String? {
+            val norm = ir.aai.hushyar.core.Text.normalize(question)
+            if (norm.length < 8) return null
+            val hits = TRIGGERS.count { norm.contains(it) }
+            return if (hits >= 1) question.take(400) else null
+        }
     }
 
     /**
