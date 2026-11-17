@@ -607,6 +607,15 @@ private fun ModelTab(vm: AppViewModel) {
     var question by remember { mutableStateOf("") }
     LaunchedEffect(Unit) { vm.refreshLocal() }
 
+    // One download, forever: the file can be written out and brought back later, so a new
+    // version of the app (or a new phone) never costs another 0.5 GB.
+    val saveLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/octet-stream")
+    ) { uri -> if (uri != null) vm.saveModelToFile(uri) }
+    val restoreLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri -> if (uri != null) vm.restoreModelFromFile(uri) }
+
     SectionTitle("هستهٔ هوش مصنوعی روی دستگاه")
     Body(
         "موتور استنتاج داخل خود اپ است (llama.cpp نسخهٔ ۱.۰.۰ که برای اندروید کامپایل شده) و " +
@@ -706,6 +715,26 @@ private fun ModelTab(vm: AppViewModel) {
             Body("دانلود قابل ادامه است؛ اگر قطع شد، از همان‌جا ادامه می‌دهد. حجم و SHA-256 پیش از استفاده بررسی می‌شود.")
         }
     }
+
+    HorizontalDivider()
+    SectionTitle("نگه‌داشتن مدل برای همیشه")
+    Body(
+        "مدل در حافظهٔ خصوصی اپ است و با نصب نسخهٔ تازه روی همان اپ پاک نمی‌شود؛ " +
+            "ولی با حذف اپ یا «پاک‌کردن داده» از بین می‌رود. یک نسخه در گوشی ذخیره کن تا " +
+            "هرگز دوباره دانلود نکنی:"
+    )
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(
+            onClick = { saveLauncher.launch(local.spec.fileName) },
+            enabled = local.phase == ModelPhase.READY,
+            modifier = Modifier.weight(1f)
+        ) { Text("ذخیرهٔ فایل مدل") }
+        OutlinedButton(
+            onClick = { restoreLauncher.launch(arrayOf("*/*")) },
+            modifier = Modifier.weight(1f)
+        ) { Text("بازیابی از فایل") }
+    }
+    Body("بازیابی، فایل را می‌خواند و با SHA-256 تشخیص می‌دهد کدام مدل است؛ اگر با هیچ‌کدام نخواند، می‌گوید چرا و فایل را نگه نمی‌دارد.")
 
     HorizontalDivider()
     SectionTitle("آزمایش روی همین دستگاه")

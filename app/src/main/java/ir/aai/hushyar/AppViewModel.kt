@@ -16,7 +16,10 @@ import ir.aai.hushyar.data.HttpModelFetcher
 import ir.aai.hushyar.data.HttpUrlTransport
 import ir.aai.hushyar.data.InstallResult
 import ir.aai.hushyar.data.LocalEngine
+import ir.aai.hushyar.data.ExportResult
+import ir.aai.hushyar.data.ImportResult
 import ir.aai.hushyar.data.ModelInstaller
+import ir.aai.hushyar.data.ModelTransfer
 import ir.aai.hushyar.data.ModelStore
 import ir.aai.hushyar.data.ProactiveRunner
 import ir.aai.hushyar.data.Repos
@@ -141,6 +144,7 @@ class AppViewModel(
 
     private val modelStore = ModelStore(store.modelsDir())
     private val installer = ModelInstaller(modelStore, HttpModelFetcher())
+    private val transfer = ModelTransfer(modelStore)
     private val engine = LocalEngine()
     @Volatile private var downloading = false
 
@@ -248,6 +252,74 @@ class AppViewModel(
         localModel = localModel.copy(downloadedBytes = 0, phase = ModelPhase.MISSING, engineReady = false, message = null)
         refreshLocal()
         notice = if (removed) "فایل مدل از دستگاه حذف شد." else "فایلی برای حذف نبود."
+    }
+
+    /**
+     * Writes the model file the user already downloaded to a destination they choose
+     * (Downloads, Drive, SD card). One download, forever — this is the copy that survives
+     * an uninstall or moves to another phone.
+     */
+    fun saveModelToFile(uri: android.net.Uri) {
+        val spec = localModel.spec
+        io({ transfer.export(spec, { store.openOutput(uri) }) }) { result ->
+            when (result) {
+                is ExportResult.Exported -> {
+                    repos.audit("user", "model.export", spec.id, "${result.bytes} bytes")
+                    notice = "فایل مدل ذخیره شد (${result.bytes / (1024 * 1024)} مگابایت). " +
+                        "بعداً با «بازیابی از فایل» همان فایل را برگردان؛ لازم نیست دوباره دانلود شود."
+                }
+                is ExportResult.Failed -> notice = result.reason
+                ExportResult.Cancelled -> notice = "ذخیرهٔ فایل لغو شد."
+            }
+        }
+    }
+
+    /**
+     * Brings back a previously saved GGUF. The SHA-256 decides which model it is, so the file
+     * can be any of the catalogue entries — the selection follows the file.
+     */
+    fun restoreModelFromFile(uri: android.net.Uri) {
+        io({
+            transfer.import(
+                openInput = { store.openInput(uri) },
+                onProgress = { done, total ->
+                    localModel = localModel.copy(
+                        phase = ModelPhase.DOWNLOADING,
+                        downloadedBytes = done,
+                        totalBytes = if (total > 0) total else localModel.totalBytes
+                    )
+                }
+            )
+        }) { result ->
+            when (result) {
+                is ImportResult.Installed -> {
+                    repos.putPreference(KEY_MODEL_ID, result.spec.id)
+                    engine.unload()
+                    repos.audit("user", "model.import", result.spec.id, "sha256 verified")
+                    localModel = localModel.copy(specId = result.spec.id, downloadedBytes = result.spec.bytes)
+                    val loaded = engine.load(modelStore.file(result.spec), result.spec)
+                    localModel = localModel.copy(
+                        engineReady = loaded,
+                        backend = engine.backend,
+                        message = if (loaded) null else engine.lastError
+                    )
+                    refreshLocal()
+                    notice = if (loaded) {
+                        "مدل «${result.spec.title}» از فایل برگردانده و بارگذاری شد؛ دانلودی لازم نبود."
+                    } else {
+                        "فایل تأیید شد ولی بارگذاری نشد: ${engine.lastError}"
+                    }
+                }
+                is ImportResult.Failed -> {
+                    localModel = localModel.copy(phase = ModelPhase.MISSING, message = result.reason)
+                    notice = result.reason
+                }
+                ImportResult.Cancelled -> {
+                    refreshLocal()
+                    notice = "بازیابی فایل لغو شد."
+                }
+            }
+        }
     }
 
     /** Loads the verified file into RAM now (first load of the session costs a few seconds). */

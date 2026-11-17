@@ -73,6 +73,19 @@ object ModelCatalog {
             recommended = true
         ),
         ModelSpec(
+            id = "qwen2.5-0.5b-q4_0",
+            title = "Qwen2.5 0.5B Instruct (Q4_0)",
+            family = "qwen2.5",
+            fileName = "qwen2.5-0.5b-instruct-q4_0.gguf",
+            url = "$HOST/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_0.gguf",
+            bytes = 428_730_208L,
+            sha256 = "7671c0c304e6ce5a7fc577bcb12aba01e2c155cc2efd29b2213c95b18edaf6ed",
+            contextTokens = 32_768,
+            license = "Apache-2.0",
+            note = "همان مدل با کوانت کم‌حجم‌تر: ۴۰۹ مگابایت (۶۰ مگابایت کمتر از Q4_K_M). " +
+                "کیفیت کمی پایین‌تر است ولی برای یک جملهٔ بازنویسی کافی."
+        ),
+        ModelSpec(
             id = "qwen2.5-1.5b",
             title = "Qwen2.5 1.5B Instruct (Q4_K_M)",
             family = "qwen2.5",

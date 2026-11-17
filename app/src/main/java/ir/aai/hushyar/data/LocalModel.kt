@@ -5,10 +5,12 @@ import ir.aai.hushyar.core.HttpDefaults
 import ir.aai.hushyar.core.LlamaNative
 import ir.aai.hushyar.domain.LocalGeneration
 import ir.aai.hushyar.domain.LocalGenerator
+import ir.aai.hushyar.domain.ModelCatalog
 import ir.aai.hushyar.domain.ModelSpec
 import java.io.File
 import java.io.FileOutputStream
 import java.io.InputStream
+import java.io.OutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
@@ -175,26 +177,188 @@ class ModelInstaller(
         part: File,
         target: File,
         onProgress: (Long, Long) -> Unit
-    ): InstallResult {
-        val size = if (part.isFile) part.length() else 0L
-        if (size != spec.bytes) {
-            return InstallResult.Failed(
-                "حجم فایل درست نیست: ${size} بایت دریافت شد، ${spec.bytes} بایت لازم بود. فایل ناقص پاک می‌شود."
-            ).also { part.delete() }
-        }
-        val digest = runCatching { ModelStore.sha256(part) }.getOrNull()
-        if (digest == null || !digest.equals(spec.sha256, ignoreCase = true)) {
-            return InstallResult.Failed(
-                "چک‌سام SHA-256 مطابق انتظار نبود (${digest?.take(12) ?: "خطا"}…)؛ فایل پاک شد و " +
-                    "هیچ مدلی نصب نشد."
-            ).also { part.delete() }
-        }
-        if (!part.renameTo(target)) {
-            return InstallResult.Failed("فایل دانلود شد ولی جای‌گذاری آن در پوشهٔ مدل‌ها ناموفق بود.")
-        }
-        onProgress(spec.bytes, spec.bytes)
-        return InstallResult.Installed
+    ): InstallResult = verifyAndPromote(spec, part, target, onProgress)
+}
+
+/**
+ * The single place where a byte-stream becomes a usable model. Used by the downloader *and*
+ * by the importer, so a file that arrives over the network and a file that arrives on a USB
+ * stick are held to exactly the same standard: right size, right SHA-256, then rename.
+ */
+internal fun verifyAndPromote(
+    spec: ModelSpec,
+    part: File,
+    target: File,
+    onProgress: (Long, Long) -> Unit
+): InstallResult {
+    val size = if (part.isFile) part.length() else 0L
+    if (size != spec.bytes) {
+        return InstallResult.Failed(
+            "حجم فایل درست نیست: $size بایت دریافت شد، ${spec.bytes} بایت لازم بود. فایل ناقص پاک می‌شود."
+        ).also { part.delete() }
     }
+    val digest = runCatching { ModelStore.sha256(part) }.getOrNull()
+    if (digest == null || !digest.equals(spec.sha256, ignoreCase = true)) {
+        return InstallResult.Failed(
+            "چک‌سام SHA-256 مطابق انتظار نبود (${digest?.take(12) ?: "خطا"}…)؛ فایل پاک شد و " +
+                "هیچ مدلی نصب نشد."
+        ).also { part.delete() }
+    }
+    if (target.exists() && !target.delete()) {
+        return InstallResult.Failed("فایل قبلی مدل حذف نشد؛ برای جای‌گذاری فایل تازه جا باز نشد.")
+    }
+    if (!part.renameTo(target)) {
+        return InstallResult.Failed("فایل بررسی شد ولی جای‌گذاری آن در پوشهٔ مدل‌ها ناموفق بود.")
+    }
+    onProgress(spec.bytes, spec.bytes)
+    return InstallResult.Installed
+}
+
+/**
+ * Save and restore the model file itself.
+ *
+ * Why this exists: a 0.5 GB download must happen **once per user**, not once per app version and
+ * not again after a reinstall. App-private storage survives a normal in-place update, but an
+ * uninstall / "clear data" wipes it, and a second phone has nothing. So the user can write the
+ * file they already paid for to Downloads / Drive / a USB stick and bring it back later.
+ *
+ * The importing side re-computes SHA-256 while copying and only accepts a file that matches a
+ * pinned catalogue entry — including a *different* model than the one currently selected, in
+ * which case the selection follows the file instead of forcing another download.
+ */
+class ModelTransfer(private val store: ModelStore) {
+
+    /** Copies an installed model out to the user's chosen destination. */
+    fun export(
+        spec: ModelSpec,
+        openOutput: () -> java.io.OutputStream?,
+        onProgress: (Long, Long) -> Unit = { _, _ -> },
+        isCancelled: () -> Boolean = { false }
+    ): ExportResult {
+        val source = store.file(spec)
+        if (!source.isFile || source.length() != spec.bytes) {
+            return ExportResult.Failed("فایل مدل کامل روی دستگاه نیست، چیزی برای ذخیره نبود.")
+        }
+        val out = runCatching { openOutput() }.getOrNull()
+            ?: return ExportResult.Failed("نوشتن در مقصد انتخاب‌شده ممکن نشد.")
+        var written = 0L
+        try {
+            out.use { destination ->
+                source.inputStream().buffered(1 shl 16).use { input ->
+                    val buffer = ByteArray(1 shl 16)
+                    var last = 0L
+                    while (true) {
+                        if (isCancelled()) return ExportResult.Cancelled
+                        val read = input.read(buffer)
+                        if (read <= 0) break
+                        destination.write(buffer, 0, read)
+                        written += read
+                        if (written - last >= (1L shl 21)) {
+                            last = written
+                            onProgress(written, spec.bytes)
+                        }
+                    }
+                    destination.flush()
+                    onProgress(written, spec.bytes)
+                }
+            }
+        } catch (t: Throwable) {
+            return ExportResult.Failed("ذخیرهٔ فایل نیمه‌کاره ماند: ${t.message ?: t::class.java.simpleName}")
+        }
+        return if (written == spec.bytes) {
+            ExportResult.Exported(written)
+        } else {
+            ExportResult.Failed("فقط $written از ${spec.bytes} بایت نوشته شد.")
+        }
+    }
+
+    /**
+     * Brings a model file back from anywhere the user can pick. The stream is hashed as it is
+     * copied; an unknown file is rejected with its real size and hash printed, never silently used.
+     */
+    fun import(
+        openInput: () -> InputStream?,
+        catalog: List<ModelSpec> = ModelCatalog.all,
+        onProgress: (Long, Long) -> Unit = { _, _ -> },
+        isCancelled: () -> Boolean = { false }
+    ): ImportResult {
+        val input = runCatching { openInput() }.getOrNull()
+            ?: return ImportResult.Failed("خواندن فایل انتخاب‌شده ممکن نشد.")
+
+        val staging = File(store.dir, "incoming.gguf")
+        runCatching { staging.delete() }
+        val need = catalog.maxOfOrNull { it.bytes } ?: 0L
+        val free = store.freeSpace()
+        if (free in 1 until need) {
+            return ImportResult.Failed(
+                "فضای کافی برای بررسی فایل نیست: دست‌کم ${need / (1024 * 1024)} مگابایت آزاد لازم است، " +
+                    "${free / (1024 * 1024)} مگابایت آزاد است."
+            )
+        }
+
+        val digest = MessageDigest.getInstance("SHA-256")
+        var total = 0L
+        try {
+            input.use { source ->
+                FileOutputStream(staging).use { out ->
+                    val buffer = ByteArray(1 shl 16)
+                    var last = 0L
+                    while (true) {
+                        if (isCancelled()) {
+                            staging.delete()
+                            return ImportResult.Cancelled
+                        }
+                        val read = source.read(buffer)
+                        if (read <= 0) break
+                        out.write(buffer, 0, read)
+                        digest.update(buffer, 0, read)
+                        total += read
+                        if (total - last >= (1L shl 21)) {
+                            last = total
+                            onProgress(total, 0)
+                        }
+                    }
+                    out.flush()
+                }
+            }
+        } catch (t: Throwable) {
+            staging.delete()
+            return ImportResult.Failed("خواندن فایل قطع شد: ${t.message ?: t::class.java.simpleName}")
+        }
+        onProgress(total, total)
+
+        val hash = digest.digest().joinToString("") { "%02x".format(it) }
+        val match = catalog.firstOrNull { it.bytes == total && it.sha256.equals(hash, ignoreCase = true) }
+        if (match == null) {
+            staging.delete()
+            val known = catalog.firstOrNull { it.bytes == total }
+            val hint = if (known != null) {
+                "حجم با «${known.title}» می‌خواند ولی چک‌سام فرق دارد: انتظار ${known.sha256.take(16)}…"
+            } else {
+                "این فایل با هیچ مدل شناخته‌شدهٔ اپ نمی‌خواند (${total} بایت)."
+            }
+            return ImportResult.Failed("$hint چک‌سام فایل ورودی: ${hash.take(32)}… فایل نپذیرفته شد و پاک شد.")
+        }
+
+        val result = verifyAndPromote(match, staging, store.file(match), onProgress)
+        return when (result) {
+            is InstallResult.Installed -> ImportResult.Installed(match)
+            is InstallResult.Failed -> ImportResult.Failed(result.reason)
+            InstallResult.Cancelled -> ImportResult.Cancelled
+        }
+    }
+}
+
+sealed class ExportResult {
+    data class Exported(val bytes: Long) : ExportResult()
+    data class Failed(val reason: String) : ExportResult()
+    object Cancelled : ExportResult()
+}
+
+sealed class ImportResult {
+    data class Installed(val spec: ModelSpec) : ImportResult()
+    data class Failed(val reason: String) : ImportResult()
+    object Cancelled : ImportResult()
 }
 
 /** Real network path: plain HTTPS GET with Range, no SDK, no key, same identity as the rest. */

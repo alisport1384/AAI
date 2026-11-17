@@ -63,6 +63,13 @@ class Store(private val context: Context) {
         else -> file.readText(Charsets.UTF_8)
     }
 
+    /** Stream access for the model file the user saves/restores (v0.7.1). */
+    fun openOutput(uri: Uri): java.io.OutputStream? =
+        context.contentResolver.openOutputStream(uri, "wt")
+
+    fun openInput(uri: Uri): java.io.InputStream? =
+        context.contentResolver.openInputStream(uri)
+
     fun readBackup(uri: Uri): String {
         val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
             ?: throw IllegalArgumentException("فایل خوانده نشد")

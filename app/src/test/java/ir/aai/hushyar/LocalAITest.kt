@@ -1,6 +1,9 @@
 package ir.aai.hushyar
 
+import ir.aai.hushyar.data.ExportResult
 import ir.aai.hushyar.data.FetchHandle
+import ir.aai.hushyar.data.ImportResult
+import ir.aai.hushyar.data.ModelTransfer
 import ir.aai.hushyar.data.InstallResult
 import ir.aai.hushyar.data.LocalEngine
 import ir.aai.hushyar.data.ModelFetcher
@@ -28,6 +31,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.security.MessageDigest
 
@@ -125,6 +129,18 @@ class LocalAITest {
         val text = REAL_QWEN_OUTPUT
         val verdict = Grounding.check(priceDraft(), text, "fa")
         assertTrue("real model output must pass the guard: ${verdict.reason}", verdict.ok)
+    }
+
+    /**
+     * Verbatim output of the Q4_0 quantisation of the same model (also downloaded and run on
+     * 2026-11-16, ~۳۱ tok/s on 2 host cores). Both pinned quants must survive the guard.
+     */
+    @Test
+    fun theSmallerQuantisationAlsoPassesTheGuard() {
+        val text = "قیمت «سامسونگ A55» ۱۲٬۰۰۰٬۰۰۰ تومان است و ۳ عدد از آن موجود است. " +
+            "میانه ۱۱٬۸۰۰٬۰۰۰ تومان و تعداد آگهی ۳."
+        val verdict = Grounding.check(priceDraft(), text, "fa")
+        assertTrue("Q4_0 output must pass the guard: ${verdict.reason}", verdict.ok)
     }
 
     /** The same file, without the example turn, echoed the data list instead of answering. */
@@ -430,6 +446,128 @@ class LocalAITest {
         assertTrue((result as InstallResult.Failed).reason.contains("اتصال"))
     }
 
+    // ---------------------------------------------------------------- save / restore
+    // The user's rule for v0.7.1: a 0.4 GB file is downloaded once, never per app version.
+
+    @Test
+    fun exportWritesEveryByteAndReportsTheCount() {
+        val payload = "GGUF-payload-for-export".toByteArray()
+        val spec = smallSpec(bytes = payload.size.toLong(), sha256 = sha256(payload))
+        val store = ModelStore(temporaryFolder.newFolder("models"))
+        store.file(spec).writeBytes(payload)
+
+        val sink = ByteArrayOutputStream()
+        val result = ModelTransfer(store).export(spec, openOutput = { sink })
+
+        assertTrue(result is ExportResult.Exported)
+        assertEquals(payload.size.toLong(), (result as ExportResult.Exported).bytes)
+        assertArrayEquals(payload, sink.toByteArray())
+    }
+
+    @Test
+    fun exportRefusesWhenNothingCompleteIsOnDisk() {
+        val store = ModelStore(temporaryFolder.newFolder("models"))
+        val result = ModelTransfer(store).export(smallSpec(bytes = 5), openOutput = { ByteArrayOutputStream() })
+        assertTrue(result is ExportResult.Failed)
+        assertTrue((result as ExportResult.Failed).reason.contains("کامل"))
+    }
+
+    @Test
+    fun exportReportsAnUnwritableDestination() {
+        val payload = "abc".toByteArray()
+        val spec = smallSpec(bytes = 3, sha256 = sha256(payload))
+        val store = ModelStore(temporaryFolder.newFolder("models"))
+        store.file(spec).writeBytes(payload)
+        val result = ModelTransfer(store).export(spec, openOutput = { null })
+        assertTrue(result is ExportResult.Failed)
+    }
+
+    @Test
+    fun importIdentifiesTheFileByHashAndInstallsIt() {
+        val payload = "restored-model-bytes".toByteArray()
+        val spec = smallSpec(bytes = payload.size.toLong(), sha256 = sha256(payload))
+        val store = ModelStore(temporaryFolder.newFolder("models"))
+
+        val result = ModelTransfer(store).import({ ByteArrayInputStream(payload) }, catalog = listOf(spec))
+
+        assertTrue(result is ImportResult.Installed)
+        assertEquals(spec, (result as ImportResult.Installed).spec)
+        assertTrue(store.installed(spec))
+        assertFalse("staging file must be gone", File(store.dir, "incoming.gguf").exists())
+        assertArrayEquals(payload, store.file(spec).readBytes())
+    }
+
+    @Test
+    fun importPicksTheMatchingCatalogueEntryNotTheSelectedOne() {
+        val a = "model-a".toByteArray()
+        val b = "model-b-longer".toByteArray()
+        val specA = smallSpec(bytes = a.size.toLong(), sha256 = sha256(a), id = "a")
+        val specB = smallSpec(bytes = b.size.toLong(), sha256 = sha256(b), id = "b")
+        val store = ModelStore(temporaryFolder.newFolder("models"))
+
+        val result = ModelTransfer(store).import({ ByteArrayInputStream(b) }, catalog = listOf(specA, specB))
+
+        assertTrue(result is ImportResult.Installed)
+        assertEquals("b", (result as ImportResult.Installed).spec.id)
+        assertTrue(store.installed(specB))
+        assertFalse(store.installed(specA))
+    }
+
+    @Test
+    fun importRejectsAnUnknownFileAndPrintsItsRealHash() {
+        val payload = "some-other-file".toByteArray()
+        val known = smallSpec(bytes = payload.size.toLong(), sha256 = "f".repeat(64))
+        val store = ModelStore(temporaryFolder.newFolder("models"))
+
+        val result = ModelTransfer(store).import({ ByteArrayInputStream(payload) }, catalog = listOf(known))
+
+        assertTrue(result is ImportResult.Failed)
+        val reason = (result as ImportResult.Failed).reason
+        assertTrue("reason must name the checksum", reason.contains(sha256(payload).take(8)))
+        assertTrue("reason must say the size matched another model", reason.contains("حجم"))
+        assertFalse(store.part(known).exists())
+        assertFalse(File(store.dir, "incoming.gguf").exists())
+    }
+
+    @Test
+    fun importRejectsAFileOfUnknownSize() {
+        val payload = "tiny".toByteArray()
+        val known = smallSpec(bytes = 999, sha256 = "f".repeat(64))
+        val store = ModelStore(temporaryFolder.newFolder("models"))
+        val result = ModelTransfer(store).import({ ByteArrayInputStream(payload) }, catalog = listOf(known))
+        assertTrue(result is ImportResult.Failed)
+        assertTrue((result as ImportResult.Failed).reason.contains("هیچ مدل شناخته‌شده"))
+    }
+
+    @Test
+    fun importCancelledLeavesNothingBehind() {
+        val payload = ByteArray(4096) { it.toByte() }
+        val spec = smallSpec(bytes = payload.size.toLong(), sha256 = sha256(payload))
+        val store = ModelStore(temporaryFolder.newFolder("models"))
+        var checks = 0
+        val result = ModelTransfer(store).import(
+            { ByteArrayInputStream(payload) },
+            catalog = listOf(spec),
+            isCancelled = { checks++ > 0 }
+        )
+        assertTrue(result is ImportResult.Cancelled)
+        assertFalse(File(store.dir, "incoming.gguf").exists())
+        assertFalse(store.installed(spec))
+    }
+
+    /** The whole point of v0.7.1: the file outlives the process and the app version. */
+    @Test
+    fun installedModelIsSeenAgainByAFreshStore() {
+        val payload = "durable".toByteArray()
+        val spec = smallSpec(bytes = payload.size.toLong(), sha256 = sha256(payload))
+        val folder = temporaryFolder.newFolder("models")
+        ModelInstaller(ModelStore(folder), FakeFetcher(payload)).install(spec)
+
+        val afterUpdate = ModelStore(folder) // same directory, new object, like a new app version
+        assertTrue("a model must never need re-downloading after an app update", afterUpdate.installed(spec))
+        assertEquals(payload.size.toLong(), afterUpdate.totalBytes())
+    }
+
     // ---------------------------------------------------------------- ui state
 
     @Test
@@ -487,12 +625,16 @@ class LocalAITest {
         lang = lang
     )
 
-    private fun smallSpec(bytes: Long = 10, sha256: String = "a".repeat(64)): ModelSpec = ModelSpec(
-        id = "test-model",
+    private fun smallSpec(
+        bytes: Long = 10,
+        sha256: String = "a".repeat(64),
+        id: String = "test-model"
+    ): ModelSpec = ModelSpec(
+        id = id,
         title = "Test Model",
         family = "qwen2.5",
-        fileName = "test-model.gguf",
-        url = "https://example.invalid/test-model.gguf",
+        fileName = "$id.gguf",
+        url = "https://example.invalid/$id.gguf",
         bytes = bytes,
         sha256 = sha256,
         contextTokens = 2048,
