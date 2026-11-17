@@ -59,7 +59,7 @@ class SearchFixesTest {
         val bing = ordered.indexOf("bing")
         val google = ordered.indexOf("google")
         val qwant = ordered.indexOf("qwant")
-        assertTrue("Bing answers, so it must come first: $ordered", bing in 0..2)
+        assertTrue("Bing answers, so it must be in the first few: $ordered", bing in 0..4)
         assertTrue("a JavaScript-only engine must stay behind: $ordered", qwant > bing)
         assertTrue("Google is still asked before the long tail: $ordered", google < ordered.size - 1)
     }

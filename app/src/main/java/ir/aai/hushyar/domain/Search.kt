@@ -176,7 +176,7 @@ object Engines {
         // به‌تنهایی هیچ اثری ندارد. این یک خط، مشکل اصلی جستجوی فارسی بود.
         EngineSpec(
             "bing", "Bing", "https://www.bing.com/search?q={q}&count=20&mkt={mkt}",
-            listOf("bing.com", "microsoft.com", "msn.com"), friction = 0,
+            listOf("bing.com", "microsoft.com", "msn.com"), friction = 1,
             note = "سنجیده‌شده: با mkt=fa-IR نتیجهٔ واقعی می‌دهد؛ بدون آن هیچ نتیجه‌ای",
             fallbacks = listOf(
                 Endpoint(
@@ -486,7 +486,7 @@ object SerpParser {
         for (block in blocks) {
             if (out.size >= limit) break
             val real = unwrapLink(block.url)
-            if (!accept(engine, real, block.title)) continue
+            if (!accept(engine, real, block.title, fromBlock = true)) continue
             val canonical = canonical(real)
             if (out.containsKey(canonical)) continue
             val snippet = block.snippet.ifBlank { snippetFor(html, block.url) }
@@ -519,6 +519,14 @@ object SerpParser {
             (host.endsWith("yandex.com") || host.endsWith("yandex.ru")) ||
             (host.endsWith("seznam.cz") && path.startsWith("/redir"))
         if (!redirector) return url
+        // v0.12: Bing’s click tracker wraps the target as `u=a1<base64url>`, not as a plain URL.
+        // Without this, every Bing result was rejected as “a bing.com link” — one of the reasons
+        // Persian search looked broken even when the page did contain real results.
+        if (host.endsWith("bing.com")) {
+            val wrapped = uri.rawQuery.orEmpty().split('&')
+                .firstOrNull { it.startsWith("u=") }?.substringAfter('=').orEmpty()
+            if (wrapped.startsWith("a1")) decodeBase64Url(wrapped.removePrefix("a1"))?.let { return it }
+        }
         val target = uri.rawQuery.orEmpty().split('&').firstNotNullOfOrNull { pair ->
             val key = pair.substringBefore('=')
             if (key in REDIRECT_PARAMS && pair.contains('=')) pair.substringAfter('=') else null
@@ -527,7 +535,18 @@ object SerpParser {
         return decoded.takeIf { it.startsWith("http") } ?: url
     }
 
-    fun accept(engine: EngineSpec, url: String, label: String): Boolean {
+    /** base64url, no padding, as Bing writes it. Returns null when it is not a URL. */
+    private fun decodeBase64Url(encoded: String): String? {
+        val cleaned = encoded.trim().trimEnd('=')
+        if (cleaned.length < 8 || cleaned.any { !(it.isLetterOrDigit() || it == '-' || it == '_') }) return null
+        val bytes = runCatching {
+            java.util.Base64.getUrlDecoder().decode(cleaned + "=".repeat((4 - cleaned.length % 4) % 4))
+        }.getOrNull() ?: return null
+        val text = runCatching { String(bytes, Charsets.UTF_8) }.getOrNull() ?: return null
+        return text.takeIf { it.startsWith("http://") || it.startsWith("https://") }
+    }
+
+    fun accept(engine: EngineSpec, url: String, label: String, fromBlock: Boolean = false): Boolean {
         val lower = url.lowercase()
         if (!lower.startsWith("http")) return false
         val host = Html.domainOf(url)?.lowercase() ?: return false
@@ -538,7 +557,9 @@ object SerpParser {
         if (title.lowercase() in NAV) return false
         if (title.count { it.isDigit() } > title.length / 2) return false
         val path = runCatching { java.net.URI(url).path.orEmpty() }.getOrDefault("")
-        if (path.isEmpty() || path == "/") return false
+        // A homepage *is* a real answer when the engine put it in a result block; the rule only
+        // existed to drop navigation links from raw anchor lists.
+        if ((path.isEmpty() || path == "/") && !fromBlock) return false
         return true
     }
 
