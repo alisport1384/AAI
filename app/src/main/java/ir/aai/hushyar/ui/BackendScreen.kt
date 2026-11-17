@@ -154,21 +154,21 @@ fun BackendScreen(vm: AppViewModel) {
                 enabled = sourceTitle.isNotBlank() && sourceUrl.isNotBlank(),
                 modifier = Modifier.weight(1f)
             ) { Text("افزودن منبع") }
-            OutlinedButton(onClick = { vm.probeEngines() }, modifier = Modifier.weight(1f)) {
-                Text(if (vm.probing) "در حال پویش…" else "پویش موتورها")
+            OutlinedButton(onClick = { vm.sweepEngines() }, modifier = Modifier.weight(1f)) {
+                Text(if (vm.sweeping) "در حال پویش…" else "پویش موتورها")
             }
         }
         sourceError?.let {
             Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
         }
-        if (vm.probes.isNotEmpty()) {
+        if (vm.engineProbes.isNotEmpty()) {
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(
-                        "نتیجهٔ پویش رویهمین شبکه (${vm.probes.count { it.ok }} از ${vm.probes.size} پاسخ داد)",
+                        "نتیجهٔ پویش رویهمین شبکه (${vm.engineProbes.count { it.ok }} از ${vm.engineProbes.size} پاسخ داد)",
                         style = MaterialTheme.typography.titleSmall
                     )
-                    vm.probes.forEach { probe ->
+                    vm.engineProbes.forEach { probe ->
                         Text(
                             (if (probe.ok) "✔ " else "✘ ") + probe.name +
                                 " — " + probe.hits + " نتیجه، " + probe.millis + "ms" +

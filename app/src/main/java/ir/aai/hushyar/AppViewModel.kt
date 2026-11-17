@@ -198,9 +198,10 @@ class AppViewModel(
         private set
     var sources by mutableStateOf<List<Engines.UserSource>>(emptyList())
         private set
-    var probes by mutableStateOf<List<EngineProbe>>(emptyList())
+    /** v0.12: one row per engine from the on-device sweep (the v0.6 `probes` triple stays as is). */
+    var engineProbes by mutableStateOf<List<EngineProbe>>(emptyList())
         private set
-    var probing by mutableStateOf(false)
+    var sweeping by mutableStateOf(false)
         private set
     var logging by mutableStateOf(false)
         private set
@@ -301,15 +302,15 @@ class AppViewModel(
     }
 
     /** Asks every engine one question and records who answered — on *this* network. */
-    fun probeEngines() {
-        if (probing) return
-        probing = true
+    fun sweepEngines() {
+        if (sweeping) return
+        sweeping = true
         viewModelScope.launch {
             val rows = withContext(Dispatchers.IO) {
                 runCatching { search.probe("قیمت تیشرت نخی", "fa", 5) }.getOrDefault(emptyList())
             }
-            probes = rows
-            probing = false
+            engineProbes = rows
+            sweeping = false
             val ok = rows.count { it.ok }
             notice = "پویش موتورها: $ok از ${rows.size} موتور روی این شبکه پاسخ دادند."
         }
