@@ -732,6 +732,15 @@ private fun ModelTab(vm: AppViewModel) {
                     }
                 }
                 Text(spec.note, style = MaterialTheme.typography.bodySmall)
+                // v0.11.2: measured on *this* phone, before the user spends a gigabyte of data.
+                val advisory = remember(spec.id, local.specId) { vm.fitAdvisory(spec.id) }
+                advisory?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
             }
         }
     }
@@ -804,6 +813,15 @@ private fun ModelTab(vm: AppViewModel) {
                 Text("دانلود یک‌بارهٔ مدل (${local.spec.sizeLabel})")
             }
             Body("دانلود قابل ادامه است؛ اگر قطع شد، از همان‌جا ادامه می‌دهد. حجم و SHA-256 پیش از استفاده بررسی می‌شود.")
+        }
+    }
+
+    OutlinedButton(onClick = { vm.diagnoseModel() }, modifier = Modifier.fillMaxWidth()) {
+        Text("گزارش مدل (فایل، حافظه، داوری)")
+    }
+    vm.modelReport?.let { report ->
+        Card(Modifier.fillMaxWidth()) {
+            Text(report, Modifier.padding(12.dp), style = MaterialTheme.typography.labelSmall)
         }
     }
 

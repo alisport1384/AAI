@@ -454,6 +454,14 @@ class LocalEngine(
     /** Is the native library present at all? Separate from "is a model loaded". */
     val nativeAvailable: Boolean get() = native.available
 
+    /**
+     * v0.11.2 — وقتی بارگذاری شکست می‌خورد، **چرا** را از کسی بپرس که اندازه گرفته است.
+     *
+     * موتور بومی هر علتی (فایل ناقص، معماری ناشناخته، حافظهٔ کم، پردازهٔ ۳۲بیتی) را در یک جمله
+     * خلاصه می‌کند. این قلاب همان پیام را با سربرگ واقعی فایل و عددهای واقعی گوشی کامل می‌کند.
+     */
+    var diagnosisFor: ((ModelSpec, File) -> String?)? = null
+
     /** Loads (or swaps) the model. Returns false with a reason in [lastError] on failure. */
     fun load(file: File, spec: ModelSpec, contextTokens: Int = spec.contextTokens.coerceAtMost(4096)): Boolean {
         if (!native.available) {
@@ -465,9 +473,22 @@ class LocalEngine(
             return false
         }
         unload()
-        val h = native.load(file.absolutePath, contextTokens, threads())
+        var ctx = contextTokens
+        var h = native.load(file.absolutePath, ctx, threads())
+        var shrunk = false
+        if (h == 0L && ctx > MIN_CONTEXT) {
+            // Some phones fail on the KV allocation before they fail on anything else; a smaller
+            // context costs quality nothing here (our prompts are a few hundred tokens) and can
+            // rescue the load. One retry, and the fact is recorded honestly in [lastError].
+            ctx = MIN_CONTEXT
+            shrunk = true
+            h = native.load(file.absolutePath, ctx, threads())
+        }
         if (h == 0L) {
-            lastError = "بارگذاری مدل ناموفق بود: ${native.lastError()}"
+            val base = "بارگذاری مدل ناموفق بود: ${native.lastError()}"
+            val shrinkNote = if (shrunk) " (با پنجرهٔ زمینهٔ ۲۰۴۸ توکن هم نشد)" else ""
+            val measured = runCatching { diagnosisFor?.invoke(spec, file) }.getOrNull()
+            lastError = if (measured.isNullOrBlank()) base + shrinkNote else "$base$shrinkNote — $measured"
             return false
         }
         handle = h
@@ -475,6 +496,9 @@ class LocalEngine(
         lastError = null
         return true
     }
+
+    /** Smallest context we will fall back to; below this our prompts do not fit. */
+    private val MIN_CONTEXT = 2048
 
     fun unload() {
         val h = handle

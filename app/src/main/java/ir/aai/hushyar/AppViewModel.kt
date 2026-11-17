@@ -6,7 +6,11 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import ir.aai.hushyar.core.Gguf
+import ir.aai.hushyar.core.GgufHeader
+import ir.aai.hushyar.core.GgufRead
 import ir.aai.hushyar.core.Ids
+import ir.aai.hushyar.core.MemInfo
 import ir.aai.hushyar.core.PriceParser
 import ir.aai.hushyar.core.Text
 import ir.aai.hushyar.data.AndroidTools
@@ -31,7 +35,10 @@ import ir.aai.hushyar.domain.Analyzer
 import ir.aai.hushyar.domain.Answer
 import ir.aai.hushyar.domain.AttributeExtractor
 import ir.aai.hushyar.domain.Catalog
+import ir.aai.hushyar.domain.DeviceMemory
 import ir.aai.hushyar.domain.EngineDiagnosis
+import ir.aai.hushyar.domain.FitVerdict
+import ir.aai.hushyar.domain.ModelFit
 import ir.aai.hushyar.domain.Interview
 import ir.aai.hushyar.domain.Listing
 import ir.aai.hushyar.domain.MarketPack
@@ -175,10 +182,16 @@ class AppViewModel(
     var studyEngineLine by mutableStateOf<String?>(null)
         private set
 
+    /** Copyable diagnosis of the last model load attempt (v0.11.2). */
+    var modelReport by mutableStateOf<String?>(null)
+        private set
+
     private val modelStore = ModelStore(store.modelsDir())
     private val installer = ModelInstaller(modelStore, HttpModelFetcher())
     private val transfer = ModelTransfer(modelStore)
-    private val engine = LocalEngine()
+    // v0.11.2: when the native engine says "load failed", this hook adds the *measured* reason —
+    // the real GGUF header and the real memory numbers of this phone.
+    private val engine = LocalEngine().also { e -> e.diagnosisFor = { spec, file -> modelFailureReport(spec, file) } }
     @Volatile private var downloading = false
 
     private val qa = QaEngine()
@@ -194,6 +207,77 @@ class AppViewModel(
     fun clearNotice() {
         notice = null
     }
+
+    // ---------- v0.11.2: measuring instead of guessing why a model will not load ----------
+
+    /**
+     * عددهای همین گوشی، در همین لحظه. حافظه از `/proc/meminfo` خوانده می‌شود (بدون Context)،
+     * بیتی‌بودن پردازه از `Process.is64Bit()`، و فضای آزاد از خود پوشهٔ مدل‌ها.
+     */
+    fun deviceMemory(): DeviceMemory {
+        val mem = MemInfo.snapshot()
+        val is64 = runCatching { android.os.Process.is64Bit() }.getOrDefault(true)
+        return DeviceMemory(
+            totalBytes = mem.totalBytes,
+            availBytes = mem.availableBytes,
+            // We do not read Android's lowMemory flag (it needs a Context we deliberately do not
+            // hold); the same information is derived from the numbers we do have, and said so.
+            lowMemory = mem.totalBytes > 0 && mem.availableBytes * 8 < mem.totalBytes,
+            is64Bit = is64,
+            freeDiskBytes = runCatching { modelStore.freeSpace() }.getOrDefault(0L),
+            abis = runCatching { android.os.Build.SUPPORTED_ABIS?.toList().orEmpty() }.getOrDefault(emptyList())
+        )
+    }
+
+    /** Header of the file that is actually on disk — or why it is not a GGUF we can read. */
+    fun installedHeader(): Pair<GgufHeader?, String> {
+        val spec = localModel.spec
+        return when (val read = Gguf.read(modelStore.file(spec))) {
+            is GgufRead.Ok -> read.header to read.header.describe()
+            is GgufRead.Bad -> null to read.reason
+        }
+    }
+
+    private fun modelFailureReport(spec: ir.aai.hushyar.domain.ModelSpec, file: java.io.File): String {
+        val header = (Gguf.read(file) as? GgufRead.Ok)?.header
+        return ModelFit.failureReport(deviceMemory(), spec, header)
+    }
+
+    /** One line for the model list, shown *before* the user spends a gigabyte of data. */
+    fun fitAdvisory(id: String): String? {
+        val spec = runCatching { ModelCatalog.find(id) }.getOrNull() ?: return null
+        val installed = runCatching { modelStore.installed(spec) }.getOrDefault(false)
+        return ModelFit.advisory(deviceMemory(), spec, installed)
+    }
+
+    /** The full copyable report: file, device, verdict. No hidden reasoning. */
+    fun diagnoseModel() {
+        val spec = localModel.spec
+        val (header, fileLine) = installedHeader()
+        val device = deviceMemory()
+        val verdict = ModelFit.verdict(device, spec.bytes, localModel.installed, header)
+        val text = buildString {
+            appendLine("گزارش مدل (v0.11.2)")
+            appendLine("مدل: ${spec.title} — ${spec.sizeLabel}")
+            appendLine("فایل: ${modelStore.file(spec).absolutePath}")
+            appendLine("سربرگ: $fileLine")
+            appendLine(
+                "دستگاه: حافظهٔ کل ${ModelFit.mb(device.totalBytes)} مگابایت، " +
+                    "آزاد ${ModelFit.mb(device.availBytes)} مگابایت (از /proc/meminfo)، " +
+                    "فضای آزاد ${ModelFit.mb(device.freeDiskBytes)} مگابایت"
+            )
+            appendLine(
+                "پردازه: " + if (device.is64Bit) "۶۴بیتی" else "۳۲بیتی" +
+                    " — معماری‌های گوشی: " + device.abis.joinToString("، ").ifBlank { "نامعلوم" }
+            )
+            appendLine("برآورد نیاز: ${ModelFit.mb(ModelFit.estimatedNeedBytes(spec.bytes))} مگابایت (تخمین)")
+            appendLine("داوری: $verdict")
+            append(ModelFit.explain(verdict, device, spec))
+            engine.lastError?.let { appendLine().appendLine("خطای آخر موتور: $it") }
+        }
+        modelReport = text
+    }
+
 
     // ---------- v0.7: on-device model lifecycle (download · verify · load · delete) ----------
 
