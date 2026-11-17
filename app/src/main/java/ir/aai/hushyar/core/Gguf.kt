@@ -31,7 +31,7 @@ data class GgufHeader(
     /** One honest sentence about the file itself, with its real numbers. */
     fun describe(): String =
         "فایل GGUF سالم است: نسخهٔ $version، معماری ${architecture ?: "نامعلوم"}، " +
-            "${Txt.num(tensorCount)} تانسور" + (name?.let { "، نام «$it»" } ?: "")
+            "${Text.num(tensorCount)} تانسور" + (name?.let { "، نام «$it»" } ?: "")
 }
 
 sealed class GgufRead {
@@ -123,7 +123,7 @@ object Gguf {
     }
 
     private fun truncated(length: Long): GgufRead.Bad =
-        GgufRead.Bad("فایل ناقص است: متادیتا تا انتهای فایل (${Txt.num(length)} بایت) ادامه دارد.")
+        GgufRead.Bad("فایل ناقص است: متادیتا تا انتهای فایل (${Text.num(length)} بایت) ادامه دارد.")
 
     // ---- little-endian readers (GGUF is LE on every platform) ----
 
