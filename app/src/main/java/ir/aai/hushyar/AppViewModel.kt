@@ -755,7 +755,10 @@ class AppViewModel(
             repos.audit("agent", "qa.answer", outcome.answer.intent, "refused=${outcome.answer.refused} md=${file.name}")
             // v0.5: learn from the question we just answered — a light pass on the same question, so
             // the next similar one is faster (a case hit costs zero network rounds).
-            if (!outcome.answer.refused) runCatching { proactive.afterAnswer(question) }
+            // v0.10: پاسخ‌های «کالا/قیمت» از جدول و محاسبه آمده‌اند و مقدارشان تاریخ دارد؛
+            // فرستادنشان به پروندهٔ پاسخ‌ها باعث می‌شد سؤال بعدی قیمت کهنه را از پرونده بخواند.
+            val isMaterialAnswer = outcome.answer.intent.startsWith("material.")
+            if (!outcome.answer.refused && !isMaterialAnswer) runCatching { proactive.afterAnswer(question) }
             outcome
         }) { outcome ->
             lastAnswer = outcome.answer

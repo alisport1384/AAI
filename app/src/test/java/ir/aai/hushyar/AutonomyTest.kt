@@ -101,21 +101,65 @@ class AutonomyTest {
     }
 
     @Test
-    fun aCooledEngineIsSkippedThenRetriedAfterTheCooldown() {
+    fun aCooledEngineIsSkippedWhileAnotherEngineIsStillAvailable() {
+        var clock = 0L
+        val transport = object : HttpTransport {
+            val asked = mutableListOf<String>()
+            override fun get(request: HttpRequest): HttpResponse {
+                asked += request.url
+                return if (request.url.contains("mojeek")) {
+                    HttpResponse(request.url, 429, "busy", error = "http 429")
+                } else {
+                    HttpResponse(
+                        request.url, 200,
+                        """<html><body><a href="https://example.com/x">مقالهٔ نمونه دربارهٔ قیمت</a>
+                        <p>این صفحه توضیح می‌دهد قیمت چگونه تعیین می‌شود.</p></body></html>"""
+                    )
+                }
+            }
+        }
+        val pair = listOf(Engines.byId("mojeek")!!, Engines.byId("wiby")!!)
+        val core = SearchCore(
+            transport, engines = pair, pacing = 0L, sleep = {}, defaultEngines = 2, clock = { clock }
+        )
+        core.search("پرسش", "fa")
+        assertTrue("هر دو موتور یک بار پرسیده شوند", transport.asked.any { it.contains("mojeek") })
+
+        val mojeekBefore = transport.asked.count { it.contains("mojeek") }
+        val otherBefore = transport.asked.size - mojeekBefore
+        core.search("پرسش دوم", "fa")
+        assertEquals(
+            "موتور در استراحت نباید دوباره پرسیده شود تا وقتی موتور دیگری هست",
+            mojeekBefore, transport.asked.count { it.contains("mojeek") }
+        )
+        assertTrue(
+            "و موتور سالم باید پرسیده شود",
+            transport.asked.size - transport.asked.count { it.contains("mojeek") } > otherBefore
+        )
+
+        clock += SearchCore.FIRST_REST_MS + 1
+        core.search("پرسش سوم", "fa")
+        assertTrue(
+            "پس از استراحت باید دوباره شانس داشته باشد",
+            transport.asked.count { it.contains("mojeek") } > mojeekBefore
+        )
+    }
+
+    @Test
+    fun aLoneEngineIsProbedRatherThanSilenced() {
+        // v0.10: اگر تنها موتور موجود در استراحت باشد، جستجو نباید کاملاً خاموش شود — همان باگی که
+        // «از سؤال دوم هوش جستجو نمی‌کند» را می‌ساخت.
         var clock = 0L
         val transport = BlockedTransport(429)
-        // One engine only, so "was it asked again?" measures the cooldown and nothing else.
-        val single = listOf(Engines.byId("mojeek")!!)
         val core = SearchCore(
-            transport, engines = single, pacing = 0L, sleep = {}, defaultEngines = 1, clock = { clock }
+            transport, engines = listOf(Engines.byId("mojeek")!!),
+            pacing = 0L, sleep = {}, defaultEngines = 1, clock = { clock }
         )
         core.search("پرسش", "fa")
         val afterFirst = transport.asked.size
-        core.search("پرسش دوم", "fa")
-        assertEquals("موتور در حال استراحت نباید دوباره پرسیده شود", afterFirst, transport.asked.size)
-        clock += SearchCore.COOLDOWN_MS + 1
-        core.search("پرسش سوم", "fa")
-        assertTrue("پس از استراحت باید دوباره شانس داشته باشد", transport.asked.size > afterFirst)
+        val second = core.search("پرسش دوم", "fa")
+        assertTrue("تنها موتور باید پیش‌آزمون شود، نه اینکه ساکت بماند", transport.asked.size > afterFirst)
+        assertTrue(second.notes.containsKey(SearchCore.ENGINE_PROBE_NOTE))
     }
 
     @Test

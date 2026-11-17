@@ -640,17 +640,43 @@ class SearchCore(
 ) {
 
     private val failures = mutableMapOf<String, Int>()
+
+    /**
+     * v0.10 — استراحت موتور، با تنبیه پله‌ای.
+     *
+     * باگ واقعی که کاربر دیده بود: «از سؤال دوم هوش دیگر جستجوی آنلاین نمی‌کند و جوابش اشتباه
+     * است». دلیلش این بود که استراحت ۱۰ دقیقه‌ایِ ثابت، *همهٔ* موتورهای خوب را با یک بار
+     * ۴۰۳/۴۲۹ از سؤال اول، تا سؤال دهم خاموش می‌کرد؛ سؤال دوم عملاً هیچ جستجویی نداشت و پاسخ از
+     * دانش کهنه ساخته می‌شد.
+     *
+     * حالا: اولین خطا ۴۵ ثانیه، بعد ۹۰، ۱۸۰ … تا سقف ۱۰ دقیقه — و اگر همهٔ موتورها در استراحت
+     * باشند، دو تای اول یک بار *پیش‌آزمون* می‌شوند تا جستجو هرگز کاملاً خاموش نشود.
+     */
+    /** تا چه لحظه‌ای استراحت؛ شمارش خطاها جدا نگه داشته می‌شود تا پیش‌آزمون آن را صفر نکند. */
     private val cooling = mutableMapOf<String, Long>()
+    private val offenses = mutableMapOf<String, Int>()
 
     fun health(): Map<String, Int> = failures.toMap()
 
     /** True while the engine is resting after a 403/429/503. Time-based: it always gets another try. */
-    private fun resting(engine: EngineSpec, now: Long): Boolean {
-        val until = cooling[engine.id] ?: return false
-        if (now < until) return true
-        cooling.remove(engine.id)
-        return false
+    private fun resting(engine: EngineSpec, now: Long): Boolean =
+        (cooling[engine.id] ?: Long.MIN_VALUE) > now
+
+    private fun rest(engine: EngineSpec, now: Long) {
+        val n = (offenses[engine.id] ?: 0) + 1
+        offenses[engine.id] = n
+        val backoff = (FIRST_REST_MS shl (n - 1)).coerceAtMost(MAX_REST_MS)
+        cooling[engine.id] = now + backoff
     }
+
+    private fun forgive(engine: EngineSpec) {
+        cooling.remove(engine.id)
+        offenses.remove(engine.id)
+    }
+
+    /** برای تست و نمایش: چرا موتوری پرسیده نشد و چند میلی‌ثانیه دیگر آزاد می‌شود. */
+    fun restingEngines(now: Long = clock()): Map<String, Long> =
+        cooling.filterValues { it > now }.mapValues { it.value - now }
 
     fun search(
         query: String,
@@ -671,7 +697,18 @@ class SearchCore(
         var used = 0
         var collected = 0
         var lastEngine: String? = null
-        for (engine in Engines.ordered(langTag).filter { candidate -> engines.any { it.id == candidate.id } }) {
+        var candidates = Engines.ordered(langTag).filter { candidate -> engines.any { it.id == candidate.id } }
+
+        // هیچ‌وقت «همه در استراحت» نداشته باش: اگر همه خواب باشند، دو تای اول یک پیش‌آزمون می‌شوند.
+        // یک جستجوی خاموش بدتر از یک درخواست اضافه است، چون کاربر فکر می‌کند هوش خراب شده.
+        if (candidates.isNotEmpty() && candidates.all { resting(it, clock()) }) {
+            val probeIds = candidates.take(2).map { it.id }
+            // استراحت را «می‌گذرانیم» ولی شمارش خطا را نگه می‌داریم تا تنبیه پله‌ای کار کند.
+            val now = clock()
+            for (id in probeIds) cooling[id] = now
+            notes[ENGINE_PROBE_NOTE] = "همهٔ موتورها در استراحت بودند؛ ${probeIds.size} موتور پیش‌آزمون شدند"
+        }
+        for (engine in candidates) {
             if (used >= maxEngines) break
             if (used > 0 && collected >= enoughHits) break
             if (clock() - started > maxCallMillis) break
@@ -702,7 +739,7 @@ class SearchCore(
                     if (answer.verdict.outcome == SerpOutcome.BLOCKED ||
                         answer.verdict.outcome == SerpOutcome.RATE_LIMITED
                     ) {
-                        cooling[engine.id] = clock() + COOLDOWN_MS
+                        rest(engine, clock())
                     }
                 }
             }
@@ -809,11 +846,11 @@ class SearchCore(
             val answer = ask(engine, clean, langTag, limitPerEngine)
             if (answer.hits.isNotEmpty()) {
                 failures[engine.id] = 0
-                cooling.remove(engine.id)
+                forgive(engine)
             } else if (answer.verdict.outcome == SerpOutcome.BLOCKED ||
                 answer.verdict.outcome == SerpOutcome.RATE_LIMITED
             ) {
-                cooling[engine.id] = clock() + COOLDOWN_MS
+                rest(engine, clock())
             }
             val detail = when {
                 answer.hits.isNotEmpty() && answer.format != SerpFormat.HTML ->
@@ -924,7 +961,11 @@ class SearchCore(
     companion object {
 
         /** An engine that said 403/429 rests for this long, then gets another honest try. */
-        const val COOLDOWN_MS = 10 * 60 * 1000L
+        /** اولین استراحت پس از یک ۴۰۳/۴۲۹؛ هر خطای بعدی دو برابر می‌شود. */
+        const val FIRST_REST_MS = 45_000L
+        const val MAX_REST_MS = 10 * 60 * 1000L
+        /** کلیدِ یادداشت گزارش، وقتی موتورهای خواب‌رفته مجبور به پیش‌آزمون شدند. */
+        const val ENGINE_PROBE_NOTE = "probe"
 
         /**
          * Reciprocal-rank fusion: an engine that cannot be gamed by one lucky page wins,

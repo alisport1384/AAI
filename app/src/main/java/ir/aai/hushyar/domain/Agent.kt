@@ -105,7 +105,12 @@ interface AgentTools {
 class Agent(
     private val tools: AgentTools,
     private val phraserFactory: (String) -> Phraser = { TemplatePhraser(it) },
-    private val directAnswerCoverage: Double = 0.55
+    private val directAnswerCoverage: Double = 0.55,
+    /** v0.11: بستهٔ دانشی که از حرف خود کاربر ساخته شده (اگر ساخته شده باشد). */
+    private val customDomain: DomainPack? = null,
+    /** v0.11: مدل محلی، وقتی نصب و روشن است، در استخراج ویژگی کمک می‌کند. */
+    private val generator: LocalGenerator? = null,
+    private val modelSpec: ModelSpec? = null
 ) {
 
     private val qa = QaEngine()
@@ -180,6 +185,52 @@ class Agent(
                 steps, actions
             )
         }
+
+        // ---- 2.5 کالاهای فولادی: اول بفهم، بعد از دانش خودت جواب بده، بعد جستجو، بعد حساب کن ----
+        //
+        // «ورق ۲ میل قیمت» یک پرسش ناقص است، نه یک پرسش بی‌معنی: کالا (ورق فولادی صنعتی)، اندازه
+        // (ضخامت ۲ میلی‌متر)، خواسته (قیمت) و پایهٔ نامشخص. MaterialBrain همان را باز می‌کند، وزن را
+        // از جدول/فرمول می‌آورد، قیمت را اگر ذخیره یا قابل جستجو بود می‌گیرد، یکای خواسته‌شده را
+        // خودش حساب می‌کند و هر چه فهمید ذخیره می‌کند تا دفعهٔ بعد آفلاین باشد. اگر پرسش هیچ کالایی
+        // نداشته باشد `null` می‌دهد و مسیر عمومی دست‌نخورده ادامه می‌یابد.
+        MaterialBrain(tools).answer(question, langTag, recorder)?.let { material ->
+            tools.logAppend("answer", "agent", material.answer.intent, "q=${question.take(120)} conf=${pct(material.answer.confidence)}")
+            return AgentOutcome(
+                material.answer.copy(
+                    trace = (steps + material.steps).map { "${it.index}. ${it.tool} → ${it.observation.take(120)}" },
+                    actions = actions + material.actions
+                ),
+                steps + material.steps,
+                actions + material.actions
+            )
+        }
+
+        // ---- 2.6 هر حوزهٔ دیگری: تی‌شرت، شلوار، پارچه… ----
+        //
+        // v0.11 پاسخ به «چیزهایی که گفتم فقط مثال بود»: همین مسیر هیچ اسم کالایی نمی‌شناسد.
+        // کالا از بستهٔ دانش می‌آید (یکی از بسته‌های آماده، یا بسته‌ای که از حرف خودِ کاربر ساخته
+        // شده)؛ ویژگی‌ها از متن پرسش خوانده می‌شوند؛ دانش نوع‌دار ذخیره می‌شود؛ قیمت یا از دانش
+        // می‌آید یا از جستجو استخراج می‌شود؛ و تبدیل یکا (عدد ↔ دوجین ↔ بسته ↔ کیلو) با ضریب
+        // حساب می‌شود. اگر کالا شناخته نشود `null` می‌دهد و مسیر عمومی ادامه می‌یابد.
+        val knownEntityIds = tools.knowledgeAll(600)
+            .mapNotNull { item -> item.topic.takeIf { it.startsWith(Facts.PREFIX) }?.removePrefix(Facts.PREFIX)?.substringBefore('|') }
+            .distinct()
+        val domainPacks = listOfNotNull(customDomain) + DomainPacks.all
+        AnyDomainBrain(tools, domainPacks, generator, modelSpec).answer(question, langTag, knownEntityIds, recorder)
+            ?.let { generic ->
+                tools.logAppend(
+                    "answer", "agent", generic.answer.intent,
+                    "q=${question.take(120)} conf=${pct(generic.answer.confidence)}"
+                )
+                return AgentOutcome(
+                    generic.answer.copy(
+                        trace = (steps + generic.steps).map { "${it.index}. ${it.tool} → ${it.observation.take(120)}" },
+                        actions = actions + generic.actions
+                    ),
+                    steps + generic.steps,
+                    actions + generic.actions
+                )
+            }
 
         // ---- 3. memory: durable user knowledge ----
         val memoryHits = tools.memorySearch(question, 6)

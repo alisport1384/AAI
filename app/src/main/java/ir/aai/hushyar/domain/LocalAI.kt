@@ -117,6 +117,22 @@ object ModelCatalog {
  */
 object LocalPrompt {
 
+    /**
+     * v0.11 — پرسشی که مدل را از «بازنویس» به «یادگیرنده» تبدیل می‌کند: از یک متن، ویژگی و عدد
+     * بیرون بکش. خروجی مدل خط‌به‌خط بازبینی می‌شود ([FactExtractor.withModel]) و هر عددی که در
+     * متن نباشد دور انداخته می‌شود، پس مدل اجازهٔ ساختن عدد ندارد — فقط اجازهٔ *دیدن* دارد.
+     */
+    fun factPrompt(snippet: String, entity: String, family: String): String {
+        val system = "تو یک استخراج‌کنندهٔ دقیق هستی. فقط از متنِ داده‌شده استخراج می‌کنی و هیچ عددی " +
+            "نمی‌سازی. هر خط به شکل «ویژگی=عدد یکا» است."
+        val user = "کالا: $entity\nمتن:\n$snippet\n\n" +
+            "اگر قیمت یا وزن در متن بود، فقط همان خط‌ها را بنویس؛ اگر نبود هیچ ننویس."
+        val example = "متن:\nقیمت هر عدد تی‌شرت نخی ۱۸۰٬۰۰۰ تومان است.\nخط‌ها:\n" to
+            "قیمت=۱۸۰۰۰۰ تومان"
+        return chat(family, system, user, example)
+    }
+
+
     const val MARKER_UNRELIABLE_FA = "پاسخ قابل اتکا نیست"
     const val MARKER_UNRELIABLE_EN = "not reliable"
 
