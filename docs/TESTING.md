@@ -331,3 +331,28 @@ gradle testDebugUnitTest     # منطق خالص: نرمال‌سازی، قیم
    اعداد بالا می‌روند؛ اگر چیزی ذخیره نشد، عدد هم بالا نمی‌رود.
 6. هدفی ذخیره کن («هدفم خرید میلگرد ۱۶ است»)، سپس یک پرسش بی‌ربط بپرس و بعد پرسشی مرتبط با هدف.
    انتظار: در تصمیم‌های بعدی، هدف در وضعیتِ داده‌شده به مدل دیده شود (مسیر استدلال، گام اول).
+
+
+## ۱۴. v0.11 — آزمون‌های «هر حوزه»
+
+`AnyDomainTest` (۲۵ آزمون) هیچ نام فلزی ندارد؛ اگر این‌ها بگذرند، یعنی دانش به دستهٔ کالا گره
+نخورده است:
+
+* `unitsConvertInsideTheirOwnDimension` — کیلو به متر تبدیل نمی‌شود؛ دوجین ۱۲ عدد است.
+* `aTshirtQuestionIsFramedWithoutAnyMetal` — «قیمت تی‌شرت نخی سایز L دوجین» → کالا، جنس، سایز،
+  خواسته و پایهٔ قیمت.
+* `aPackOfFiveIsUnderstoodAsAPackBase` — «بسته» پایه است، نه مقدار.
+* `aFactSurvivesTheRoundTripThroughTheKnowledgeStore` — دانش نوع‌دار در انبار دانش می‌ماند و
+  کهنگی‌اش درست حساب می‌شود.
+* `aPerPiecePriceBecomesAPerDozenPrice` — ۱۸۰٬۰۰۰ هر عدد → ۲٬۱۶۰٬۰۰۰ دوجین، با فرمول.
+* `aPackPriceNeedsTheLearnedPackSize` — بدون دانستن تعداد بسته، تبدیل انجام نمی‌شود (حدس ممنوع).
+* `aWeightFactBridgesPieceAndKilogram` — با وزن هر عدد، قیمت کیلویی ساخته می‌شود.
+* `aNumberWithoutCurrencyIsNotAPrice` / `aResultThatDoesNotMentionTheProductIsIgnored` — استخراج
+  سخت‌گیر است.
+* `theModelCanProposeAFactThatTheTextSupports` / `theModelCannotInventANumberThatIsNotInTheText` —
+  مدل اجازهٔ دیدن دارد، نه ساختن.
+* `aGarmentPriceIsLearnedThenAnsweredOfflineWithConversion` — سؤال اول جستجو و ذخیره، سؤال دوم
+  **بدون شبکه** و با همان محاسبه.
+* `withNoPriceItSaysSoAndAsksOnlyWhatItNeeds` — نبودِ قیمت با «پیدا نکردم» و پرسش دقیق، نه حدس.
+* `aBusinessDescriptionBecomesAPack` — «من فروشگاه تی‌شرت و شلوار هستم…» → بستهٔ دانش.
+* `anUnknownProductNeverStealsTheGeneralPath` — کالای ناشناس مسیر عمومی را نمی‌دزدد.
