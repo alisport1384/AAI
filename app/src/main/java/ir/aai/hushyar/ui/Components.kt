@@ -70,7 +70,7 @@ fun Collapsible(
 
 /** A tappable one-line chip: suggestions, follow-ups, examples. */
 @Composable
-fun Chip(text: String, onClick: () -> Unit, selected: Boolean = false) {
+fun Chip(text: String, selected: Boolean = false, onClick: () -> Unit) {
     val bg = if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant
     Text(
         text = text,

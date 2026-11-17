@@ -207,13 +207,6 @@ class AppViewModel(
     var logLines by mutableStateOf<List<ir.aai.hushyar.domain.AuditEntry>>(emptyList())
         private set
 
-    private companion object {
-        const val KEY_GOAL = "backend.goal"
-        const val KEY_ENV = "backend.environment"
-        const val KEY_DIRECTIVE = "backend.directive"
-        const val KEY_SOURCES = "search.sources"
-    }
-
     private val modelStore = ModelStore(store.modelsDir())
     private val installer = ModelInstaller(modelStore, HttpModelFetcher())
     private val transfer = ModelTransfer(modelStore)
@@ -1364,6 +1357,12 @@ class AppViewModel(
         /** Preference keys: one model is remembered across restarts, plus the on/off switch. */
         const val KEY_MODEL_ID = "local_model_id"
         const val KEY_MODEL_USE = "local_model_use"
+
+        /** v0.12: the backend page's own settings. */
+        const val KEY_GOAL = "backend.goal"
+        const val KEY_ENV = "backend.environment"
+        const val KEY_DIRECTIVE = "backend.directive"
+        const val KEY_SOURCES = "search.sources"
 
         fun factory(repos: Repos, store: Store): ViewModelProvider.Factory = AppViewModelFactory(repos, store)
     }
