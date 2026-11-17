@@ -36,6 +36,9 @@ import ir.aai.hushyar.core.Jalali
 import ir.aai.hushyar.core.Text as Txt
 import ir.aai.hushyar.domain.KnowledgeItem
 import ir.aai.hushyar.domain.Listing
+import ir.aai.hushyar.domain.ModelCatalog
+import ir.aai.hushyar.domain.ModelPhase
+import androidx.compose.material3.Switch
 import ir.aai.hushyar.domain.MemoryBank
 import ir.aai.hushyar.domain.MemoryItem
 
@@ -139,6 +142,7 @@ private enum class DataTab(val label: String) {
     Listings("آگهی‌ها"),
     Knowledge("دانش"),
     Memory("حافظه"),
+    Model("مدل محلی"),
     Backup("پشتیبان"),
     Log("لاگ")
 }
@@ -163,6 +167,7 @@ fun DataScreen(vm: AppViewModel) {
             DataTab.Listings -> ListingsTab(vm)
             DataTab.Knowledge -> KnowledgeTab(vm)
             DataTab.Memory -> MemoryTab(vm)
+            DataTab.Model -> ModelTab(vm)
             DataTab.Backup -> BackupTab(vm)
             DataTab.Log -> LogTab(vm)
         }
@@ -587,6 +592,144 @@ private fun MemoryTab(vm: AppViewModel) {
             OutlinedButton(onClick = { editing = null }) { Text("انصراف") }
         }
     }
+}
+
+/**
+ * v0.7 — the on-device core, visible and controllable.
+ *
+ * The panel never hides a failure: it prints the engine string, the exact download progress,
+ * the SHA-256 result, and the model's own reply when you press "آزمایش". Without a model the
+ * rest of the app keeps working exactly as in v0.6.
+ */
+@Composable
+private fun ModelTab(vm: AppViewModel) {
+    val local = vm.localModel
+    var question by remember { mutableStateOf("") }
+    LaunchedEffect(Unit) { vm.refreshLocal() }
+
+    SectionTitle("هستهٔ هوش مصنوعی روی دستگاه")
+    Body(
+        "موتور استنتاج داخل خود اپ است (llama.cpp نسخهٔ ۱.۰.۰ که برای اندروید کامپایل شده) و " +
+            "مدل، فایل GGUF است که یک بار دانلود می‌شود و بعد کامل آفلاین کار می‌کند. " +
+            "هیچ کلید API، حساب یا ارسال داده به بیرون در کار نیست؛ تنها ترافیک، همان یک دانلود است."
+    )
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(
+                when (local.phase) {
+                    ModelPhase.ENGINE_ERROR -> "موتور: در دسترس نیست"
+                    ModelPhase.DOWNLOADING -> "در حال دانلود"
+                    ModelPhase.READY -> "مدل نصب شده"
+                    ModelPhase.MISSING -> "مدلی نصب نیست"
+                },
+                style = MaterialTheme.typography.titleMedium
+            )
+            Text(
+                "کتابخانه: " + local.backend.take(160),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (local.engineReady) {
+                Text(
+                    "مدل در حافظه: ${local.spec.title}",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            local.message?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
+        }
+    }
+
+    SectionTitle("انتخاب مدل")
+    ModelCatalog.all.forEach { spec ->
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(spec.title, style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            "${spec.sizeLabel} • ${spec.license}" + if (spec.recommended) " • پیشنهادی" else "",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    if (local.specId == spec.id) {
+                        Text("انتخاب‌شده", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.secondary)
+                    } else {
+                        TextButton(onClick = { vm.chooseModel(spec.id) }) { Text("انتخاب") }
+                    }
+                }
+                Text(spec.note, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+    }
+
+    HorizontalDivider()
+    SectionTitle("دانلود و نصب")
+    Text("فایل روی حافظهٔ خصوصی اپ ذخیره می‌شود؛ حجم: ${local.spec.sizeLabel}", style = MaterialTheme.typography.bodySmall)
+    when (local.phase) {
+        ModelPhase.ENGINE_ERROR -> Body(
+            "کتابخانهٔ موتور روی این دستگاه بارگذاری نشد، پس دانلود فایده ندارد. " +
+                "علت در بخش وضعیت بالا آمده است."
+        )
+        ModelPhase.DOWNLOADING -> {
+            LinearProgressIndicator(progress = { local.progress }, modifier = Modifier.fillMaxWidth())
+            Text(
+                "${Txt.numEn(local.downloadedBytes / (1024 * 1024))} از ${local.spec.sizeLabel} — ${Txt.numEn(local.percent.toLong())}٪",
+                style = MaterialTheme.typography.bodySmall
+            )
+            OutlinedButton(onClick = { vm.cancelDownload() }, modifier = Modifier.fillMaxWidth()) { Text("لغو") }
+        }
+        ModelPhase.READY -> {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { vm.loadModelNow() }, modifier = Modifier.weight(1f)) { Text("بارگذاری در حافظه") }
+                OutlinedButton(onClick = { vm.deleteModel() }, modifier = Modifier.weight(1f)) { Text("حذف فایل") }
+            }
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("بازنویسی جملهٔ پاسخ با مدل محلی", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "اعداد، شاهدها و رد‌کردن‌ها همان‌قبل می‌مانند؛ فقط جمله بازنویسی می‌شود و " +
+                            "اگر مدل عددی بی‌شاهد بسازد، پاسخ به قالب قطعی برمی‌گردد.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(checked = local.usingForAnswers, onCheckedChange = { vm.setLocalAnswers(it) })
+            }
+        }
+        ModelPhase.MISSING -> {
+            Button(onClick = { vm.downloadModel() }, modifier = Modifier.fillMaxWidth()) {
+                Text("دانلود یک‌بارهٔ مدل (${local.spec.sizeLabel})")
+            }
+            Body("دانلود قابل ادامه است؛ اگر قطع شد، از همان‌جا ادامه می‌دهد. حجم و SHA-256 پیش از استفاده بررسی می‌شود.")
+        }
+    }
+
+    HorizontalDivider()
+    SectionTitle("آزمایش روی همین دستگاه")
+    Button(onClick = { vm.testLocalEngine() }, modifier = Modifier.fillMaxWidth()) { Text("یک جمله با مدل بساز") }
+    vm.localProof?.let {
+        Card(Modifier.fillMaxWidth()) {
+            Text(it, Modifier.padding(12.dp), style = MaterialTheme.typography.bodyMedium)
+        }
+    }
+
+    SectionTitle("گفت‌وگوی محلی")
+    Body("این پاسخ‌ها فقط از مدل می‌آید، شاهد وب ندارد و به دانش اپ اضافه نمی‌شود.")
+    OutlinedTextField(
+        value = question,
+        onValueChange = { question = it },
+        label = { Text("پرسش از مدل روی دستگاه") },
+        modifier = Modifier.fillMaxWidth(),
+        minLines = 2
+    )
+    Button(
+        onClick = { vm.askLocal(question) },
+        enabled = question.isNotBlank(),
+        modifier = Modifier.fillMaxWidth()
+    ) { Text("بپرس (آفلاین)") }
 }
 
 @Composable

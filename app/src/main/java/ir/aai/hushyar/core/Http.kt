@@ -24,7 +24,7 @@ interface HttpTransport {
 object HttpDefaults {
 
     const val USER_AGENT: String =
-        "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Hushyar/0.6 (+on-device research)"
+        "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Hushyar/0.7 (+on-device research)"
 
     fun headers(langTag: String): Map<String, String> = mapOf(
         "User-Agent" to USER_AGENT,

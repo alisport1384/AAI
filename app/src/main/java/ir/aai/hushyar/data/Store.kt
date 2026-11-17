@@ -17,6 +17,9 @@ class Store(private val context: Context) {
     val backupDir: File = File(root, "backups").apply { mkdirs() }
     val logDir: File = File(root, "logs").apply { mkdirs() }
 
+    /** Where the optional on-device model lives (v0.7). Same private tree as everything else. */
+    fun modelsDir(): File = File(root, "models").apply { mkdirs() }
+
     fun stamp(now: Long = System.currentTimeMillis()): String {
         val fmt = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US)
         return fmt.format(java.util.Date(now))

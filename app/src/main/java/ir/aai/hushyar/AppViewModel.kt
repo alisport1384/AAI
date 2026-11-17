@@ -12,7 +12,12 @@ import ir.aai.hushyar.core.Text
 import ir.aai.hushyar.data.AndroidTools
 import ir.aai.hushyar.data.BackupService
 import ir.aai.hushyar.data.CsvImporter
+import ir.aai.hushyar.data.HttpModelFetcher
 import ir.aai.hushyar.data.HttpUrlTransport
+import ir.aai.hushyar.data.InstallResult
+import ir.aai.hushyar.data.LocalEngine
+import ir.aai.hushyar.data.ModelInstaller
+import ir.aai.hushyar.data.ModelStore
 import ir.aai.hushyar.data.ProactiveRunner
 import ir.aai.hushyar.data.Repos
 import ir.aai.hushyar.data.Store
@@ -31,7 +36,15 @@ import ir.aai.hushyar.domain.MemoryBank
 import ir.aai.hushyar.domain.MemoryItem
 import ir.aai.hushyar.domain.KnowledgeBank
 import ir.aai.hushyar.domain.KnowledgeItem
+import ir.aai.hushyar.domain.LocalChatter
+import ir.aai.hushyar.domain.LocalGeneration
+import ir.aai.hushyar.domain.LocalModelUi
+import ir.aai.hushyar.domain.LocalPhraser
 import ir.aai.hushyar.domain.LogEvent
+import ir.aai.hushyar.domain.ModelCatalog
+import ir.aai.hushyar.domain.ModelPhase
+import ir.aai.hushyar.domain.TemplatePhraser
+import ir.aai.hushyar.domain.replyLine
 import ir.aai.hushyar.domain.PackBuildResult
 import ir.aai.hushyar.domain.PackCodec
 import ir.aai.hushyar.domain.ProductGroup
@@ -117,6 +130,20 @@ class AppViewModel(
     var engineCount by mutableStateOf(0)
         private set
 
+    /** v0.7: the on-device core. Absent by default; the app is complete without it. */
+    var localModel by mutableStateOf(LocalModelUi(
+        specId = repos.preference(KEY_MODEL_ID) ?: ModelCatalog.recommended.id,
+        usingForAnswers = repos.preference(KEY_MODEL_USE) == "1"
+    ))
+        private set
+    var localProof by mutableStateOf<String?>(null)
+        private set
+
+    private val modelStore = ModelStore(store.modelsDir())
+    private val installer = ModelInstaller(modelStore, HttpModelFetcher())
+    private val engine = LocalEngine()
+    @Volatile private var downloading = false
+
     private val qa = QaEngine()
     private val search = SearchCore(HttpUrlTransport())
     private val tools = AndroidTools(repos, store, search)
@@ -124,10 +151,156 @@ class AppViewModel(
 
     init {
         refresh()
+        refreshLocal()
     }
 
     fun clearNotice() {
         notice = null
+    }
+
+    // ---------- v0.7: on-device model lifecycle (download · verify · load · delete) ----------
+
+    /** Reads what is actually on disk and what the native engine actually reports. */
+    fun refreshLocal() {
+        val spec = localModel.spec
+        val installed = modelStore.installed(spec)
+        val part = if (modelStore.part(spec).isFile) modelStore.part(spec).length() else 0L
+        localModel = localModel.copy(
+            phase = when {
+                !engine.nativeAvailable -> ModelPhase.ENGINE_ERROR
+                installed -> ModelPhase.READY
+                else -> ModelPhase.MISSING
+            },
+            downloadedBytes = if (part > 0) part else if (installed) spec.bytes else 0,
+            totalBytes = spec.bytes,
+            engineReady = engine.ready,
+            backend = engine.backend,
+            message = engine.lastError
+        )
+    }
+
+    fun chooseModel(id: String) {
+        if (!ModelCatalog.byId.containsKey(id)) return
+        repos.putPreference(KEY_MODEL_ID, id)
+        engine.unload()
+        localModel = localModel.copy(specId = id, downloadedBytes = 0, totalBytes = ModelCatalog.find(id).bytes)
+        refreshLocal()
+        notice = "مدل انتخابی: ${ModelCatalog.find(id).title}"
+    }
+
+    /** One download, resumed if it was interrupted, verified by size and SHA-256. */
+    fun downloadModel() {
+        if (downloading) return
+        val spec = localModel.spec
+        downloading = true
+        localModel = localModel.copy(phase = ModelPhase.DOWNLOADING, totalBytes = spec.bytes, message = null)
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                installer.install(
+                    spec,
+                    onProgress = { done, total ->
+                        localModel = localModel.copy(downloadedBytes = done, totalBytes = if (total > 0) total else spec.bytes)
+                    },
+                    isCancelled = { !downloading }
+                )
+            }
+            downloading = false
+            when (result) {
+                is InstallResult.Installed -> {
+                    repos.audit("user", "model.install", spec.id, "${spec.bytes} bytes sha256=${spec.sha256.take(12)}")
+                    val loaded = withContext(Dispatchers.IO) { engine.load(modelStore.file(spec), spec) }
+                    localModel = localModel.copy(
+                        phase = ModelPhase.READY,
+                        downloadedBytes = spec.bytes,
+                        engineReady = loaded,
+                        backend = engine.backend,
+                        message = if (loaded) null else engine.lastError
+                    )
+                    notice = if (loaded) {
+                        "مدل نصب و بارگذاری شد: ${spec.title}"
+                    } else {
+                        "مدل دانلود و تأیید شد، ولی بارگذاری نشد: ${engine.lastError}"
+                    }
+                    refreshLocal()
+                }
+                is InstallResult.Failed -> {
+                    repos.audit("system", "model.failed", spec.id, result.reason)
+                    localModel = localModel.copy(phase = ModelPhase.MISSING, message = result.reason)
+                    notice = result.reason
+                }
+                InstallResult.Cancelled -> {
+                    localModel = localModel.copy(phase = ModelPhase.MISSING, message = "دانلود لغو شد.")
+                    notice = "دانلود لغو شد؛ فایل ناقص برای ادامهٔ بعدی نگه داشته شد."
+                }
+            }
+        }
+    }
+
+    fun cancelDownload() {
+        downloading = false
+    }
+
+    fun deleteModel() {
+        val spec = localModel.spec
+        engine.unload()
+        val removed = modelStore.delete(spec)
+        repos.audit("user", "model.delete", spec.id, "removed=$removed")
+        localModel = localModel.copy(downloadedBytes = 0, phase = ModelPhase.MISSING, engineReady = false, message = null)
+        refreshLocal()
+        notice = if (removed) "فایل مدل از دستگاه حذف شد." else "فایلی برای حذف نبود."
+    }
+
+    /** Loads the verified file into RAM now (first load of the session costs a few seconds). */
+    fun loadModelNow() {
+        val spec = localModel.spec
+        io({ engine.load(modelStore.file(spec), spec) }) { loaded ->
+            localModel = localModel.copy(
+                engineReady = loaded,
+                phase = if (loaded) ModelPhase.READY else localModel.phase,
+                backend = engine.backend,
+                message = if (loaded) null else engine.lastError
+            )
+            notice = if (loaded) "مدل در حافظه بارگذاری شد." else "بارگذاری نشد: ${engine.lastError}"
+        }
+    }
+
+    fun setLocalAnswers(enabled: Boolean) {
+        repos.putPreference(KEY_MODEL_USE, if (enabled) "1" else "0")
+        localModel = localModel.copy(usingForAnswers = enabled)
+        if (enabled && !engine.ready && modelStore.installed(localModel.spec)) loadModelNow()
+        notice = if (enabled) {
+            "بازنویسی پاسخ‌ها با مدل محلی روشن شد (شاهدها و اعداد از قبل همان‌اند)."
+        } else {
+            "بازنویسی پاسخ‌ها با قالب قطعی برگشت."
+        }
+    }
+
+    /** Runs the model once on a harmless prompt: the only proof that it works *on this device*. */
+    fun testLocalEngine() {
+        val spec = localModel.spec
+        io({
+            if (!engine.ready) {
+                if (!engine.load(modelStore.file(spec), spec)) return@io LocalGeneration(error = engine.lastError)
+            }
+            engine.generate(ir.aai.hushyar.domain.LocalPrompt.selfTest(spec), 48)
+        }) { result ->
+            localProof = when {
+                result.ok -> "پاسخ مدل (${result.millis}ms): ${result.text}"
+                else -> "موتور جواب نداد: ${result.error}"
+            }
+            localModel = localModel.copy(engineReady = engine.ready, backend = engine.backend, lastTest = localProof)
+            refreshLocal()
+        }
+    }
+
+    /** Free chat with the downloaded model. Labelled as model text; never stored as knowledge. */
+    fun askLocal(question: String) {
+        io({
+            LocalChatter(engine, localModel.spec).reply(question)
+        }) { reply ->
+            localProof = reply.replyLine()
+            localModel = localModel.copy(lastTest = localProof)
+        }
     }
 
     private fun <T> io(block: () -> T, then: (T) -> Unit) {
@@ -297,7 +470,17 @@ class AppViewModel(
         if (question.isBlank()) return
         steps = emptyList()
         io({
-            val agent = Agent(tools)
+            // The model, when installed and switched on, only re-phrases grounded drafts.
+            // Same evidence, same citations, same refusals — different sentence.
+            val spec = localModel.spec
+            val phraserFactory: (String) -> ir.aai.hushyar.domain.Phraser = { lang ->
+                if (localModel.usingForAnswers && engine.ready) {
+                    LocalPhraser(lang, engine, spec)
+                } else {
+                    TemplatePhraser(lang)
+                }
+            }
+            val agent = Agent(tools, phraserFactory)
             val outcome = agent.run(question, allowWeb = true)
             val transcript = Markdown.answer(question, outcome.answer, outcome.steps, System.currentTimeMillis())
             val file = store.writeLog("qa-${store.stamp()}", transcript)
@@ -625,6 +808,11 @@ class AppViewModel(
     )
 
     companion object {
+
+        /** Preference keys: one model is remembered across restarts, plus the on/off switch. */
+        const val KEY_MODEL_ID = "local_model_id"
+        const val KEY_MODEL_USE = "local_model_use"
+
         fun factory(repos: Repos, store: Store): ViewModelProvider.Factory = AppViewModelFactory(repos, store)
     }
 }
