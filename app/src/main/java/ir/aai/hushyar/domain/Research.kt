@@ -51,6 +51,8 @@ data class ResearchOutcome(
     val failures: Map<String, String> = emptyMap(),
     /** Pages intentionally not used as evidence, with the reason (hostile, short, unreachable). */
     val skipped: List<Pair<String, String>> = emptyList(),
+    /** Which endpoint actually answered, when it was not the engine's ordinary HTML page. */
+    val notes: Map<String, String> = emptyMap(),
     /** How the question was read, and whether an actual answer (not just topical text) was found. */
     val model: QuestionModel? = null,
     val answer: AnswerPlan? = null
@@ -98,6 +100,7 @@ class DeepResearcher(
         val pages = mutableListOf<ExtractedPage>()
         val seen = mutableSetOf<String>()
         val failures = LinkedHashMap<String, String>()
+        val notes = LinkedHashMap<String, String>()
         val skipped = mutableListOf<Pair<String, String>>()
         val rounds = mutableListOf<ResearchRound>()
         var evidence: List<Evidence> = emptyList()
@@ -122,6 +125,7 @@ class DeepResearcher(
                 SearchReport(query, emptyList(), emptyMap(), mapOf("transport" to (error.message ?: "?")))
             }
             report.failures.forEach { (engine, reason) -> failures.putIfAbsent(engine, reason) }
+            report.notes.forEach { (engine, note) -> notes.putIfAbsent(engine, note) }
 
             val fresh = report.hits.filter { it.url !in seen }.take(budget.pagesPerRound)
             var fetched = 0
@@ -203,6 +207,7 @@ class DeepResearcher(
             coverage = coverage,
             stop = stop,
             failures = failures,
+            notes = notes,
             skipped = skipped.toList(),
             model = model,
             answer = plan

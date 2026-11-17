@@ -179,7 +179,9 @@ data class SearchReport(
     val query: String,
     val hits: List<WebHit>,
     val perEngine: Map<String, Int> = emptyMap(),
-    val failures: Map<String, String> = emptyMap()
+    val failures: Map<String, String> = emptyMap(),
+    /** Which route answered, when it was not the ordinary HTML page (e.g. "پاسخ از مسیر RSS"). */
+    val notes: Map<String, String> = emptyMap()
 ) {
     val isEmpty: Boolean get() = hits.isEmpty()
 }

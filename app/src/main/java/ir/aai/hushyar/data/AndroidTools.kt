@@ -12,7 +12,11 @@ import ir.aai.hushyar.domain.EngineProbe
 import ir.aai.hushyar.domain.DomainStat
 import ir.aai.hushyar.domain.DomainTrust
 import ir.aai.hushyar.domain.Evidence
+import ir.aai.hushyar.domain.DeepStudy
+import ir.aai.hushyar.domain.LocalBrain
 import ir.aai.hushyar.domain.PlanBuilder
+import ir.aai.hushyar.domain.StudyBudget
+import ir.aai.hushyar.domain.StudyOutcome
 import ir.aai.hushyar.domain.PlanProgress
 import ir.aai.hushyar.domain.PlayEntry
 import ir.aai.hushyar.domain.Playbook
@@ -48,6 +52,30 @@ class AndroidTools(
 ) : AgentTools {
 
     private var lastBackup: File? = null
+
+    /**
+     * v0.8 — the deep-study loop wired to the real world: every engine (not the cheap eight),
+     * real pages, real knowledge store. The local model, when installed, plans facets and labels
+     * layers; without it the deterministic planner does the same job more plainly.
+     */
+    fun deepStudy(
+        topic: String,
+        langTag: String,
+        budget: StudyBudget = StudyBudget(),
+        brain: LocalBrain? = null
+    ): StudyOutcome {
+        val study = DeepStudy(
+            search = { query, lang -> search.searchAll(query, lang) },
+            fetch = { url, lang -> fetchPage(url, lang) },
+            store = { item -> knowledgeStore(item) },
+            existing = { t -> repos.knowledgeAll(500).filter { it.topic == t } },
+            brain = brain
+        )
+        val outcome = study.study(topic, langTag, budget)
+        repos.log("study", "agent", "یادگیری عمیق: ${outcome.learned.size} نکته", outcome.summary)
+        repos.audit("agent", "study.run", topic.take(120), "coverage=${outcome.coverage} stop=${outcome.stop}")
+        return outcome
+    }
 
     override fun now(): Long = System.currentTimeMillis()
 

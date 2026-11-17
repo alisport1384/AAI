@@ -7,6 +7,8 @@ import ir.aai.hushyar.core.HttpTransport
 import ir.aai.hushyar.core.Lang
 import ir.aai.hushyar.core.LangDetect
 import ir.aai.hushyar.core.Lexicon
+import ir.aai.hushyar.core.Json
+import ir.aai.hushyar.core.MiniJson
 import ir.aai.hushyar.core.Ranking
 import ir.aai.hushyar.core.Text
 
@@ -16,6 +18,32 @@ import ir.aai.hushyar.core.Text
  * changes its markup the adapter survives and only the generic filter is adjusted.
  */
 enum class EngineKind { GENERAL, WIKI, META, PERSIAN, SPECIALIST }
+
+/** Wire format of one endpoint. Chosen per engine from what the endpoint actually returns. */
+enum class SerpFormat { HTML, RSS, JSON }
+
+/**
+ * One concrete way of asking an engine. An engine may have several: Bing answers both as HTML
+ * and as a tiny RSS document, and the RSS one is 10× smaller and far more stable — so it goes
+ * first. Order in [EngineSpec.endpoints] is the order we try them.
+ */
+data class Endpoint(
+    val template: String,
+    val format: SerpFormat = SerpFormat.HTML,
+    val note: String = ""
+)
+
+/**
+ * What an engine actually did, as opposed to "0 results". Measured 2026-11-17 from a datacenter
+ * IP: Bing/DDG/Mwmbl/Wiby/Seznam answer, Google/Startpage/ECOSIA/Mojeek/Qwant/Swisscows hand
+ * back a JavaScript shell or a 403. Telling the user *which* of those happened is the difference
+ * between "the search is broken" and "this engine blocks this network".
+ */
+enum class SerpOutcome { RESULTS, EMPTY, BLOCKED, RATE_LIMITED, JS_REQUIRED, HTTP_ERROR, NETWORK }
+
+data class SerpVerdict(val outcome: SerpOutcome, val detail: String = "") {
+    val ok: Boolean get() = outcome == SerpOutcome.RESULTS
+}
 
 /**
  * One adapter = one public HTML endpoint + the hosts that belong to the engine itself.
@@ -33,9 +61,20 @@ data class EngineSpec(
     val kind: EngineKind = EngineKind.GENERAL,
     val needsJs: Boolean = false,
     val friction: Int = 2,
-    val note: String = ""
+    val note: String = "",
+    /**
+     * Extra ways to ask the same engine, tried in order when the primary one yields nothing.
+     * The primary is [template]; this list is what turns "usually 0 results" into a result.
+     */
+    val fallbacks: List<Endpoint> = emptyList()
 ) {
-    fun url(query: String, langTag: String): String {
+    /** Primary first, then the alternates. */
+    val endpoints: List<Endpoint>
+        get() = listOf(Endpoint(template, SerpFormat.HTML)) + fallbacks
+
+    fun url(query: String, langTag: String): String = render(template, query, langTag)
+
+    fun render(template: String, query: String, langTag: String): String {
         val encoded = java.net.URLEncoder.encode(query, "UTF-8").replace("+", "%20")
         val hl = if (langTag == "fa") "fa" else "en"
         return template.replace("{q}", encoded).replace("{hl}", hl)
@@ -61,7 +100,8 @@ object Engines {
         ),
         EngineSpec(
             "mojeek", "Mojeek", "https://www.mojeek.com/search?q={q}",
-            listOf("mojeek.com"), friction = 1, note = "ایندکس مستقل، HTML ساده"
+            listOf("mojeek.com"), friction = 3,
+            note = "ایندکس مستقل؛ از IP مرکز داده ۴۰۳ می‌دهد (سنجیده‌شده) — از شبکهٔ موبایل معمولاً باز است"
         ),
         EngineSpec(
             "wikipedia-fa", "ویکی‌پدیا (fa)", "https://fa.wikipedia.org/w/index.php?search={q}&ns0=1",
@@ -80,7 +120,25 @@ object Engines {
         // ---- mixed ----
         EngineSpec(
             "bing", "Bing", "https://www.bing.com/search?count=10&setlang={hl}&q={q}",
-            listOf("bing.com", "microsoft.com", "msn.com"), friction = 2
+            listOf("bing.com", "microsoft.com", "msn.com"), friction = 2,
+            note = "HTML معمولاً جواب می‌دهد؛ اگر نه، خروجی RSS همان جستجو",
+            fallbacks = listOf(
+                Endpoint(
+                    "https://www.bing.com/search?q={q}&format=rss&count=20",
+                    SerpFormat.RSS,
+                    "سنجیده‌شده ۲۰۲۶-۱۱-۱۷: ۲۰۰ با ۱۰–۱۲ نتیجه، ۵ کیلوبایت، فارسی و انگلیسی"
+                )
+            )
+        ),
+        EngineSpec(
+            "mwmbl", "Mwmbl", "https://api.mwmbl.org/api/v1/search/?s={q}",
+            listOf("mwmbl.org"), kind = EngineKind.SPECIALIST, friction = 1,
+            note = "API عمومی بدون کلید؛ سنجیده‌شده: ۲۰۰ با ۳۰+ نتیجه در یک پاسخ JSON کوچک"
+        ),
+        EngineSpec(
+            "wiby", "Wiby", "https://wiby.me/?q={q}",
+            listOf("wiby.me"), kind = EngineKind.SPECIALIST, friction = 1,
+            note = "ایندکس کوچک و دست‌چین؛ سنجیده‌شده: ۲۰۰ با نتیجه برای انگلیسی، بدون فارسی"
         ),
         EngineSpec(
             "brave", "Brave", "https://search.brave.com/search?q={q}",
@@ -151,7 +209,8 @@ object Engines {
         ),
         EngineSpec(
             "qwant", "Qwant", "https://www.qwant.com/?q={q}",
-            listOf("qwant.com"), friction = 3, needsJs = true
+            listOf("qwant.com"), friction = 3, needsJs = true,
+            note = "اپ جاوااسکریپتی؛ HTML سرور نتیجه ندارد و API عمومی ۴۰۳ می‌دهد"
         ),
         EngineSpec(
             "swisscows", "Swisscows", "https://swisscows.com/web?query={q}",
@@ -203,12 +262,45 @@ object SerpParser {
 
     private val BAD_PATH = Regex("(?i)/(search|preferences|settings|account|login|signin|policies|terms|cookie)")
 
+    /**
+     * One entry point for every wire format. HTML keeps the anchor-window strategy; RSS and JSON
+     * are already structured, so they only need the same accept() filter as everything else.
+     */
+    fun parseAny(engine: EngineSpec, format: SerpFormat, body: String, limit: Int = 8): List<WebHit> {
+        val items: List<FeedParser.FeedItem> = when (format) {
+            SerpFormat.HTML -> return parse(engine, body, limit)
+            SerpFormat.RSS -> FeedParser.items(body, limit * 3)
+            SerpFormat.JSON -> when (engine.id) {
+                "mwmbl" -> JsonSerp.mwmbl(body, limit * 3)
+                "wikipedia-fa", "wikipedia-en" -> JsonSerp.wikipedia(body, limit * 3)
+                else -> FeedParser.items(body, limit * 3) // generic: whatever URL-shaped fields exist
+            }
+        }
+        val out = LinkedHashMap<String, WebHit>()
+        for (item in items) {
+            if (out.size >= limit) break
+            val real = unwrapLink(item.link)
+            if (!accept(engine, real, item.title)) continue
+            val canonical = canonical(real)
+            if (out.containsKey(canonical)) continue
+            out[canonical] = WebHit(
+                url = canonical,
+                title = clean(item.title),
+                snippet = clean(item.description).take(240),
+                engine = engine.id,
+                rank = out.size + 1
+            )
+        }
+        return out.values.toList()
+    }
+
     fun parse(engine: EngineSpec, html: String, limit: Int = 8): List<WebHit> {
         val out = LinkedHashMap<String, WebHit>()
         for (link in Html.links(html, engine.url("x", "fa"), limit = 120)) {
             if (out.size >= limit) break
-            if (!accept(engine, link.url, link.text)) continue
-            val canonical = canonical(link.url)
+            val real = unwrapLink(link.url)
+            if (!accept(engine, real, link.text)) continue
+            val canonical = canonical(real)
             if (out.containsKey(canonical)) continue
             val snippet = snippetFor(html, link.url)
             out[canonical] = WebHit(
@@ -220,6 +312,32 @@ object SerpParser {
             )
         }
         return out.values.toList()
+    }
+
+    private val REDIRECT_PARAMS = setOf("uddg", "u", "url", "target", "dest", "q")
+
+    /**
+     * Engines hide the real result behind their own click-tracker: DuckDuckGo sends
+     * `//duckduckgo.com/l/?uddg=<encoded>`, Google `/url?q=`, Bing `/ck/a?...&u=`. Filtering on the
+     * engine's own host before unwrapping is why DDG "returned nothing" for months.
+     */
+    fun unwrapLink(url: String): String {
+        val uri = runCatching { java.net.URI(url) }.getOrNull() ?: return url
+        val host = uri.host?.lowercase() ?: return url
+        val path = uri.rawPath.orEmpty()
+        val redirector = (host.endsWith("duckduckgo.com") && path.startsWith("/l/")) ||
+            (host.endsWith("google.com") && (path == "/url" || path == "/url/")) ||
+            (host.endsWith("bing.com") && path.startsWith("/ck/a")) ||
+            (host.endsWith("search.yahoo.com") && path.startsWith("/r")) ||
+            (host.endsWith("yandex.com") || host.endsWith("yandex.ru")) ||
+            (host.endsWith("seznam.cz") && path.startsWith("/redir"))
+        if (!redirector) return url
+        val target = uri.rawQuery.orEmpty().split('&').firstNotNullOfOrNull { pair ->
+            val key = pair.substringBefore('=')
+            if (key in REDIRECT_PARAMS && pair.contains('=')) pair.substringAfter('=') else null
+        } ?: return url
+        val decoded = runCatching { java.net.URLDecoder.decode(target, "UTF-8") }.getOrDefault(target)
+        return decoded.takeIf { it.startsWith("http") } ?: url
     }
 
     fun accept(engine: EngineSpec, url: String, label: String): Boolean {
@@ -268,6 +386,128 @@ object SerpParser {
     }
 }
 
+
+/**
+ * RSS/Atom reader — the smallest honest way for an engine to answer us. Bing exposed this
+ * (`&format=rss`) and it is 5 KB instead of 40 KB and needs no JavaScript at all.
+ */
+object FeedParser {
+
+    data class FeedItem(val title: String, val link: String, val description: String)
+
+    fun items(xml: String, limit: Int = 20): List<FeedItem> {
+        // Raw strings here are not style: in a normal Kotlin string "\b" is a backspace character,
+        // which silently produced a pattern that matched nothing and made every RSS engine look empty.
+        val blocks = Regex("""(?is)<item\b[^>]*>(.*?)</item>""").findAll(xml).map { it.groupValues[1] }.toList()
+            .ifEmpty {
+                Regex("""(?is)<entry\b[^>]*>(.*?)</entry>""").findAll(xml).map { it.groupValues[1] }.toList()
+            }
+        val out = ArrayList<FeedItem>(blocks.size)
+        for (block in blocks) {
+            if (out.size >= limit) break
+            val title = tag(block, "title")
+            val link = plainTag(block, "link") ?: attrTag(block, "link", "href") ?: continue
+            val description = tag(block, "description").ifBlank { tag(block, "summary") }
+            if (title.isBlank() || !link.startsWith("http")) continue
+            out.add(FeedItem(Html.decodeEntities(title), Html.decodeEntities(link), Html.decodeEntities(description)))
+        }
+        return out
+    }
+
+    private fun plainTag(block: String, name: String): String? =
+        Regex("""(?is)<$name\s*>(.*?)</$name>""").find(block)?.groupValues?.get(1)?.trim()?.takeIf { it.isNotBlank() }
+
+    private fun attrTag(block: String, name: String, attr: String): String? =
+        Regex("""(?is)<$name\b[^>]*\b$attr\s*=\s*["']([^"']+)["']""").find(block)?.groupValues?.get(1)
+
+    private fun tag(block: String, name: String): String =
+        plainTag(block, name) ?: ""
+}
+
+/**
+ * The two key-less JSON APIs that answered in the 2026-11 survey: Mwmbl (an open index) and the
+ * MediaWiki search API. Both are parsed defensively: an unexpected shape yields an empty list,
+ * never an exception, because a search must never crash the agent.
+ */
+object JsonSerp {
+
+    fun mwmbl(body: String, limit: Int = 20): List<FeedParser.FeedItem> = runCatching {
+        MiniJson.parse(body).asObjects().take(limit).mapNotNull { row ->
+            val url = row["url"]?.asStringOrNull() ?: return@mapNotNull null
+            val title = segments(row["title"])
+            val extract = segments(row["extract"]).ifBlank { segments(row["description"]) }
+            FeedParser.FeedItem(title.ifBlank { url }, url, extract)
+        }
+    }.getOrDefault(emptyList())
+
+    fun wikipedia(body: String, limit: Int = 20): List<FeedParser.FeedItem> = runCatching {
+        val root = MiniJson.parse(body).fieldsOrEmpty
+        val search = root["query"]?.fieldsOrEmpty?.get("search")?.asObjects().orEmpty()
+        search.take(limit).mapNotNull { row ->
+            val title = (row["title"]?.asStringOrNull() ?: return@mapNotNull null)
+                .replace(Regex("""\s+"""), " ").trim()
+            val snippet = Html.toText(row["snippet"]?.asStringOrNull().orEmpty())
+            FeedParser.FeedItem(title, wikiUrl(row), snippet)
+        }
+    }.getOrDefault(emptyList())
+
+    /**
+     * Mwmbl highlights matches by splitting the title into `[{"value":"Sony","is_bold":true}, …]`.
+     * Reading it as a plain string threw the whole title away and every Mwmbl row was dropped.
+     */
+    private fun segments(node: Json?): String {
+        if (node == null) return ""
+        node.asStringOrNull()?.let { return it.trim() }
+        return node.asObjects().joinToString("") { it["value"]?.asStringOrNull().orEmpty() }.trim()
+    }
+
+    private fun wikiUrl(row: Map<String, Json>): String = row["fullurl"]?.asStringOrNull()
+        ?: ("https://" + (row["wiki"]?.asStringOrNull() ?: "en.wikipedia.org") + "/wiki/" +
+            java.net.URLEncoder.encode(row["title"]?.asStringOrNull().orEmpty().replace(' ', '_'), "UTF-8"))
+}
+
+/**
+ * Why an engine gave us nothing. Measured failure modes from a datacenter IP on 2026-11-17:
+ * Google/Startpage return a JavaScript shell with status 200; Ecosia/Mojeek/Yep return 403;
+ * DuckDuckGo answers 202 with an anomaly page when asked twice in a row.
+ */
+object SerpGuard {
+
+    private val CAPTCHA = Regex(
+        "(?i)(captcha|unusual traffic|detected unusual|are you a robot|verify you are human|" +
+            "anomaly|automated queries|too many requests|rate limit|access denied|forbidden)"
+    )
+    private val JS_ONLY = Regex(
+        "(?i)(enable javascript|javascript is disabled|requires javascript|__NEXT_DATA__|" +
+            "noscript|please turn on javascript)"
+    )
+
+    fun classify(status: Int, body: String, hits: Int): SerpVerdict {
+        if (hits > 0) return SerpVerdict(SerpOutcome.RESULTS)
+        return when {
+            status == 429 -> SerpVerdict(SerpOutcome.RATE_LIMITED, "HTTP 429 — محدودیت نرخ")
+            status == 403 || status == 401 -> SerpVerdict(SerpOutcome.BLOCKED, "HTTP $status — دسترسی بسته")
+            status == 503 -> SerpVerdict(SerpOutcome.RATE_LIMITED, "HTTP 503 — موقتاً در دسترس نیست")
+            status !in 200..299 -> SerpVerdict(SerpOutcome.HTTP_ERROR, "HTTP $status")
+            CAPTCHA.containsMatchIn(body.take(20_000)) ->
+                SerpVerdict(SerpOutcome.BLOCKED, "صفحهٔ کپچا/تشخیص ربات برگشت")
+            JS_ONLY.containsMatchIn(body.take(20_000)) ->
+                SerpVerdict(SerpOutcome.JS_REQUIRED, "بی‌جاوااسکریپت نتیجه‌ای در HTML نیست")
+            else -> SerpVerdict(SerpOutcome.EMPTY, "پاسخ سالم بود ولی نتیجه‌ای نداشت")
+        }
+    }
+
+    fun label(outcome: SerpOutcome): String = when (outcome) {
+        SerpOutcome.RESULTS -> "نتیجه دارد"
+        SerpOutcome.EMPTY -> "بدون نتیجه"
+        SerpOutcome.BLOCKED -> "بلاک شد (کپچا/۴۰۳)"
+        SerpOutcome.RATE_LIMITED -> "محدودیت نرخ (۴۲۹/۲۰۳)"
+        SerpOutcome.JS_REQUIRED -> "فقط با جاوااسکریپت"
+        SerpOutcome.HTTP_ERROR -> "خطای HTTP"
+        SerpOutcome.NETWORK -> "خطای شبکه"
+    }
+}
+
 /** Result of one engine being asked one question, used by the self-test screen. */
 data class EngineProbe(
     val id: String,
@@ -276,7 +516,9 @@ data class EngineProbe(
     val ok: Boolean,
     val hits: Int,
     val detail: String,
-    val millis: Long
+    val millis: Long,
+    val outcome: SerpOutcome = if (ok) SerpOutcome.RESULTS else SerpOutcome.EMPTY,
+    val endpoint: String = "html"
 )
 
 /** Fetches and prepares a "document": cleaned text with an explicit trust marker. */
@@ -361,6 +603,7 @@ class SearchCore(
         val started = clock()
         val perEngine = LinkedHashMap<String, List<WebHit>>()
         val errors = LinkedHashMap<String, String>()
+        val notes = LinkedHashMap<String, String>()
         var used = 0
         var collected = 0
         var lastEngine: String? = null
@@ -375,38 +618,33 @@ class SearchCore(
             used++
             if (lastEngine != null) sleep(pacing)
             lastEngine = engine.id
-            val response = try {
-                http.get(HttpRequest(engine.url(clean, langTag), HttpDefaults.headers(langTag)))
-            } catch (t: Throwable) {
-                errors[engine.id] = "خطای شبکه: ${t.message ?: t::class.java.simpleName}"
-                failures[engine.id] = (failures[engine.id] ?: 0) + 1
-                continue
-            }
-            if (!response.ok) {
-                errors[engine.id] = "HTTP ${response.status}"
-                failures[engine.id] = (failures[engine.id] ?: 0) + 1
-                if (response.status == 403 || response.status == 429 || response.status == 503) {
-                    cooling[engine.id] = clock() + COOLDOWN_MS
+            val answer = ask(engine, clean, langTag, limitPerEngine)
+            when {
+                answer.hits.isNotEmpty() -> {
+                    failures[engine.id] = 0
+                    perEngine[engine.id] = answer.hits
+                    collected += answer.hits.size
+                    if (answer.format != SerpFormat.HTML) {
+                        notes[engine.id] = "پاسخ از مسیر ${answer.format.name} (${answer.endpointNote})"
+                    }
                 }
-                continue
-            }
-            val hits = try {
-                SerpParser.parse(engine, response.body, limitPerEngine)
-            } catch (t: Throwable) {
-                errors[engine.id] = "خطای تجزیه: ${t.message ?: "?"}"
-                emptyList()
-            }
-            if (hits.isEmpty()) {
-                errors[engine.id] = errors[engine.id] ?: "بدون نتیجهٔ قابل تجزیه"
-                failures[engine.id] = (failures[engine.id] ?: 0) + 1
-            } else {
-                failures[engine.id] = 0
-                perEngine[engine.id] = hits
-                collected += hits.size
+                answer.verdict.outcome == SerpOutcome.NETWORK -> {
+                    errors[engine.id] = answer.verdict.detail
+                    failures[engine.id] = (failures[engine.id] ?: 0) + 1
+                }
+                else -> {
+                    errors[engine.id] = "${SerpGuard.label(answer.verdict.outcome)} — ${answer.verdict.detail}"
+                    failures[engine.id] = (failures[engine.id] ?: 0) + 1
+                    if (answer.verdict.outcome == SerpOutcome.BLOCKED ||
+                        answer.verdict.outcome == SerpOutcome.RATE_LIMITED
+                    ) {
+                        cooling[engine.id] = clock() + COOLDOWN_MS
+                    }
+                }
             }
         }
         val merged = fuse(perEngine)
-        val report = SearchReport(clean, merged, perEngine.mapValues { it.value.size }, errors)
+        val report = SearchReport(clean, merged, perEngine.mapValues { it.value.size }, errors, notes.toMap())
         if (merged.size >= 3) return report
 
         // Reflection step: a thin result set usually means the query was too narrow or in the
@@ -421,11 +659,70 @@ class SearchCore(
                 query = expanded,
                 hits = combined,
                 perEngine = report.perEngine + second.perEngine.mapKeys { "retry:${it.key}" },
-                failures = report.failures + second.failures.mapKeys { "retry:${it.key}" }
+                failures = report.failures + second.failures.mapKeys { "retry:${it.key}" },
+                notes = report.notes + second.notes.mapKeys { "retry:${it.key}" }
             )
         }
         return report
     }
+
+    /** One engine answering one query: which endpoint said what, and how it ended. */
+    private data class EngineAnswer(
+        val hits: List<WebHit>,
+        val verdict: SerpVerdict,
+        val format: SerpFormat,
+        val endpointNote: String,
+        val millis: Long
+    )
+
+    /**
+     * Walks an engine's endpoint chain: HTML first, then whatever else that engine offers (RSS for
+     * Bing, JSON for the open APIs). Measured reason for this: from a datacenter IP the Bing HTML
+     * page is sometimes a consent shell while its RSS endpoint answers with ten clean results.
+     */
+    private fun ask(engine: EngineSpec, query: String, langTag: String, limit: Int): EngineAnswer {
+        val started = clock()
+        var last = SerpVerdict(SerpOutcome.NETWORK, "هیچ مسیری امتحان نشد")
+        for (endpoint in engine.endpoints) {
+            val url = engine.render(endpoint.template, query, langTag)
+            val response = try {
+                http.get(HttpRequest(url, HttpDefaults.headers(langTag)))
+            } catch (t: Throwable) {
+                last = SerpVerdict(SerpOutcome.NETWORK, "خطای شبکه: ${t.message ?: t::class.java.simpleName}")
+                continue
+            }
+            if (!response.ok) {
+                last = SerpGuard.classify(response.status, "", 0)
+                continue
+            }
+            val hits = try {
+                SerpParser.parseAny(engine, endpoint.format, response.body, limit)
+            } catch (t: Throwable) {
+                last = SerpVerdict(SerpOutcome.EMPTY, "خطای تجزیه: ${t.message ?: "?"}")
+                emptyList()
+            }
+            val verdict = SerpGuard.classify(response.status, response.body, hits.size)
+            if (hits.isNotEmpty()) {
+                return EngineAnswer(hits, verdict, endpoint.format, endpoint.note, clock() - started)
+            }
+            last = verdict
+        }
+        return EngineAnswer(emptyList(), last, SerpFormat.HTML, "", clock() - started)
+    }
+
+    /**
+     * The "learn everything about one thing" mode: ask **every** engine, keep going past the
+     * point where the default search would stop, and return the union. Used by the deep-study
+     * loop, never by a casual question (it costs one request per engine).
+     */
+    fun searchAll(query: String, langTag: String = "fa", limitPerEngine: Int = 10): SearchReport =
+        search(
+            query,
+            langTag = langTag,
+            limitPerEngine = limitPerEngine,
+            maxEngines = engines.size,
+            enoughHits = Int.MAX_VALUE
+        )
 
     /**
      * Ask **every** engine the same question, one by one, and report what each one did. This is the
@@ -439,34 +736,34 @@ class SearchCore(
         for (engine in Engines.ordered(langTag).filter { candidate -> engines.any { it.id == candidate.id } }) {
             if (!first) sleep(pacing)
             first = false
-            val started = clock()
-            val response = try {
-                http.get(HttpRequest(engine.url(clean, langTag), HttpDefaults.headers(langTag)))
-            } catch (t: Throwable) {
-                out.add(
-                    EngineProbe(
-                        engine.id, engine.name, engine.friction, false, 0,
-                        t.message ?: t::class.java.simpleName, clock() - started
-                    )
-                )
-                continue
-            }
-            if (!response.ok) {
-                out.add(EngineProbe(engine.id, engine.name, engine.friction, false, 0, "HTTP ${response.status}", clock() - started))
-                continue
-            }
-            val hits = runCatching { SerpParser.parse(engine, response.body, limitPerEngine) }.getOrDefault(emptyList())
-            out.add(
-                EngineProbe(
-                    engine.id, engine.name, engine.friction, hits.isNotEmpty(), hits.size,
-                    if (hits.isEmpty()) "پاسخ آمد ولی نتیجهٔ قابل تجزیه نداشت" else "ok",
-                    clock() - started
-                )
-            )
-            if (hits.isNotEmpty()) {
+            val answer = ask(engine, clean, langTag, limitPerEngine)
+            if (answer.hits.isNotEmpty()) {
                 failures[engine.id] = 0
                 cooling.remove(engine.id)
+            } else if (answer.verdict.outcome == SerpOutcome.BLOCKED ||
+                answer.verdict.outcome == SerpOutcome.RATE_LIMITED
+            ) {
+                cooling[engine.id] = clock() + COOLDOWN_MS
             }
+            val detail = when {
+                answer.hits.isNotEmpty() && answer.format != SerpFormat.HTML ->
+                    "n نتیجه از مسیر ${answer.format.name}"
+                answer.hits.isNotEmpty() -> "n نتیجه از HTML"
+                else -> "${SerpGuard.label(answer.verdict.outcome)} — ${answer.verdict.detail}"
+            }
+            out.add(
+                EngineProbe(
+                    id = engine.id,
+                    name = engine.name,
+                    friction = engine.friction,
+                    ok = answer.hits.isNotEmpty(),
+                    hits = answer.hits.size,
+                    detail = detail,
+                    millis = answer.millis,
+                    outcome = answer.verdict.outcome,
+                    endpoint = answer.format.name.lowercase()
+                )
+            )
         }
         return out
     }

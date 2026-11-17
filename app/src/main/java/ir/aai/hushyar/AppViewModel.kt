@@ -39,6 +39,7 @@ import ir.aai.hushyar.domain.MemoryBank
 import ir.aai.hushyar.domain.MemoryItem
 import ir.aai.hushyar.domain.KnowledgeBank
 import ir.aai.hushyar.domain.KnowledgeItem
+import ir.aai.hushyar.domain.LocalBrain
 import ir.aai.hushyar.domain.LocalChatter
 import ir.aai.hushyar.domain.LocalGeneration
 import ir.aai.hushyar.domain.LocalModelUi
@@ -46,6 +47,8 @@ import ir.aai.hushyar.domain.LocalPhraser
 import ir.aai.hushyar.domain.LogEvent
 import ir.aai.hushyar.domain.ModelCatalog
 import ir.aai.hushyar.domain.ModelPhase
+import ir.aai.hushyar.domain.StudyBudget
+import ir.aai.hushyar.domain.StudyTrigger
 import ir.aai.hushyar.domain.TemplatePhraser
 import ir.aai.hushyar.domain.replyLine
 import ir.aai.hushyar.domain.PackBuildResult
@@ -140,6 +143,18 @@ class AppViewModel(
     ))
         private set
     var localProof by mutableStateOf<String?>(null)
+        private set
+
+    /** v0.8: deep study state — what was asked, what came back, layer by layer. */
+    var studyRunning by mutableStateOf(false)
+        private set
+    var studySummary by mutableStateOf<String?>(null)
+        private set
+    var studyLayers by mutableStateOf<List<Triple<String, Int, Int>>>(emptyList())
+        private set
+    var studyGaps by mutableStateOf<List<String>>(emptyList())
+        private set
+    var studyEngineLine by mutableStateOf<String?>(null)
         private set
 
     private val modelStore = ModelStore(store.modelsDir())
@@ -318,6 +333,46 @@ class AppViewModel(
                     refreshLocal()
                     notice = "بازیابی فایل لغو شد."
                 }
+            }
+        }
+    }
+
+    /**
+     * «یاد بگیر» — searches every engine, harvests what it finds, layers it, and keeps asking
+     * until a whole round adds nothing. The knowledge it stores answers later questions through
+     * the normal knowledge gate, so this is a one-time cost per topic.
+     */
+    fun studyTopic(topic: String, deep: Boolean = false) {
+        val clean = topic.trim()
+        if (clean.length < 3) {
+            notice = "موضوع خیلی کوتاه است؛ یک نام یا عبارت بنویس."
+            return
+        }
+        if (studyRunning) return
+        studyRunning = true
+        val langTag = if (clean.any { it in '\u0600'..'\u06FF' }) "fa" else "en"
+        viewModelScope.launch {
+            val brain = if (localModel.usingForAnswers && engine.ready) LocalBrain(engine, localModel.spec) else null
+            val budget = StudyBudget.byName(if (deep) "deep" else repos.researchDepth())
+            val outcome = withContext(Dispatchers.IO) {
+                runCatching { tools.deepStudy(clean, langTag, budget, brain) }
+            }
+            studyRunning = false
+            outcome.onFailure { notice = "یادگیری ناموفق: ${it.message ?: "خطای نامشخص"}" }
+            outcome.onSuccess { result ->
+                studySummary = result.summary
+                studyLayers = result.facets.map { facet ->
+                    val count = result.learned.count { it.layer == facet.layer }
+                    val sources = result.learned.filter { it.layer == facet.layer }.map { it.domain }.distinct().size
+                    Triple(facet.layer, count, sources)
+                }
+                studyGaps = result.gaps
+                val answered = result.engines.count { it.value > 0 }
+                studyEngineLine = "موتورهای پاسخ‌دهنده: $answered" +
+                    if (result.failures.isEmpty()) "" else " — بی‌نتیجه: " +
+                        result.failures.entries.take(6).joinToString("، ") { "${it.key}: ${it.value.take(40)}" }
+                notice = result.summary
+                refreshSecondary()
             }
         }
     }
@@ -542,6 +597,15 @@ class AppViewModel(
         if (question.isBlank()) return
         steps = emptyList()
         io({
+            // v0.8: a knowledge request ("یاد بگیر…", "همه‌چیز درباره…") runs the full study loop
+            // first — every engine, layered — so the answer below is built from fresh material
+            // that also stays for later questions.
+            if (StudyTrigger.wantsStudy(question)) {
+                val topic = StudyTrigger.topicOf(question)
+                val langTag = if (topic.any { it in '\u0600'..'\u06FF' }) "fa" else "en"
+                val brain = if (localModel.usingForAnswers && engine.ready) LocalBrain(engine, localModel.spec) else null
+                runCatching { tools.deepStudy(topic, langTag, StudyBudget.byName(repos.researchDepth()), brain) }
+            }
             // The model, when installed and switched on, only re-phrases grounded drafts.
             // Same evidence, same citations, same refusals — different sentence.
             val spec = localModel.spec

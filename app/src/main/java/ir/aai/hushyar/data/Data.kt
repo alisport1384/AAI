@@ -110,6 +110,10 @@ class Db(context: Context) : SQLiteOpenHelper(context, NAME, null, VERSION) {
         // v0.5 tables. This must be its own step: a real install upgrading from v0.3/v0.4 has
         // oldVersion == 3, so putting these inside the "< 3" block would leave the app without
         // qa_case/playbook/domain_stat/plan_state and every v0.5 feature would crash on first use.
+        // v0.8: layered knowledge. Additive column, so nothing is rebuilt and no fact is lost.
+        if (oldVersion < 5) {
+            runCatching { db.execSQL("ALTER TABLE knowledge ADD COLUMN layer TEXT NOT NULL DEFAULT ''") }
+        }
         if (oldVersion < 4) {
             db.execSQL(CASE_TABLE)
             db.execSQL(PLAYBOOK_TABLE)
@@ -120,7 +124,7 @@ class Db(context: Context) : SQLiteOpenHelper(context, NAME, null, VERSION) {
 
     companion object {
         private const val NAME = "hushyar.db"
-        private const val VERSION = 4
+        private const val VERSION = 5
 
         private const val MEMORY_TABLE = """CREATE TABLE memory(
                 id TEXT PRIMARY KEY,
@@ -197,7 +201,8 @@ class Db(context: Context) : SQLiteOpenHelper(context, NAME, null, VERSION) {
                 ttl_days INTEGER NOT NULL DEFAULT 45,
                 source_count INTEGER NOT NULL DEFAULT 1,
                 superseded_by TEXT,
-                tags TEXT NOT NULL DEFAULT '[]'
+                tags TEXT NOT NULL DEFAULT '[]',
+                layer TEXT NOT NULL DEFAULT ''
             )"""
 
         private val MEMORY_V2_COLUMNS = listOf(
@@ -509,6 +514,7 @@ class Repos(private val db: Db) {
         put("source_count", item.sourceCount)
         put("superseded_by", item.supersededById)
         put("tags", MiniJson.write(MiniJson.strs(item.tags), pretty = false))
+        put("layer", item.layer)
     }
 
     private fun readKnowledge(c: Cursor): KnowledgeItem {
@@ -538,7 +544,8 @@ class Repos(private val db: Db) {
             ttlDays = if (c.getColumnIndex("ttl_days") < 0) KnowledgeBank.DEFAULT_TTL_DAYS else c.getInt(c.getColumnIndex("ttl_days")),
             sourceCount = if (c.getColumnIndex("source_count") < 0) 1 else c.getInt(c.getColumnIndex("source_count")),
             supersededById = str("superseded_by").takeIf { it.isNotBlank() },
-            tags = tags
+            tags = tags,
+            layer = str("layer")
         )
     }
 
@@ -564,7 +571,8 @@ class Repos(private val db: Db) {
      * merge produced (insert, refresh, correction, conflict). Contradictions keep history: the
      * superseded row stays in the table, only marked.
      */
-    fun knowledgeUpsert(item: KnowledgeItem): KnowledgeResult {
+    fun knowledgeUpsert(raw: KnowledgeItem): KnowledgeResult {
+        val item = KnowledgeBank.stamp(raw, now)
         val existing = knowledgeByTopic(item.topic)
         val merge = KnowledgeBank.merge(existing, item)
         if (merge.decision == KnowledgeDecision.IGNORE) {

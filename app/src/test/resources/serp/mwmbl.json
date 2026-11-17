@@ -1,0 +1,545 @@
+[
+ {
+  "url": "https://www.theverge.com/23067645/sony-wh-1000xm5-noise-canceling-headphones-review",
+  "title": [
+   {
+    "value": "Sony",
+    "is_bold": true
+   },
+   {
+    "value": " ",
+    "is_bold": false
+   },
+   {
+    "value": "WH-1000XM5",
+    "is_bold": true
+   },
+   {
+    "value": " review: new design, new sound, new ",
+    "is_bold": false
+   },
+   {
+    "value": "price",
+    "is_bold": true
+   },
+   {
+    "value": " - The V…",
+    "is_bold": false
+   }
+  ],
+  "extract": [
+   {
+    "value": " Share this story ",
+    "is_bold": false
+   },
+   {
+    "value": "Sony",
+    "is_bold": true
+   },
+   {
+    "value": " has a brand new flagship set of noise-canceling headphones: the ",
+    "is_bold": false
+   },
+   {
+    "value": "WH-1000XM5",
+    "is_bold": true
+   },
+   {
+    "value": ". And as much as we’ve ragged on ",
+    "is_bold": false
+   },
+   {
+    "value": "Sony",
+    "is_bold": true
+   },
+   {
+    "value": "’s terrible product …",
+    "is_bold": false
+   }
+  ],
+  "source": "mwmbl"
+ },
+ {
+  "url": "https://www.fonearena.com/blog/tag/sony-wh-1000xm5-price-india",
+  "title": [
+   {
+    "value": "Sony",
+    "is_bold": true
+   },
+   {
+    "value": " ",
+    "is_bold": false
+   },
+   {
+    "value": "WH-1000XM5",
+    "is_bold": true
+   },
+   {
+    "value": " ",
+    "is_bold": false
+   },
+   {
+    "value": "price",
+    "is_bold": true
+   },
+   {
+    "value": " India | Fone Arena",
+    "is_bold": false
+   }
+  ],
+  "extract": [],
+  "source": "mwmbl"
+ },
+ {
+  "url": "https://arstechnica.com/?p=1853780",
+  "title": [
+   {
+    "value": "Sony",
+    "is_bold": true
+   },
+   {
+    "value": "’s ",
+    "is_bold": false
+   },
+   {
+    "value": "WH-1000XM5",
+    "is_bold": true
+   },
+   {
+    "value": " headphones come with a new design, $50 ",
+    "is_bold": false
+   },
+   {
+    "value": "price",
+    "is_bold": true
+   },
+   {
+    "value": " h…",
+    "is_bold": false
+   }
+  ],
+  "extract": [
+   {
+    "value": " An updated design In general, the ",
+    "is_bold": false
+   },
+   {
+    "value": "WH-1000XM5",
+    "is_bold": true
+   },
+   {
+    "value": "—which remains a mouthful of a name—aren’t a massive shift from their predecessor, and interestingly, ",
+    "is_bold": false
+   },
+   {
+    "value": "Sony",
+    "is_bold": true
+   },
+   {
+    "value": " wi…",
+    "is_bold": false
+   }
+  ],
+  "source": "mwmbl"
+ },
+ {
+  "url": "http://www.soundguys.com/product/sony-wh-1000xm5/",
+  "title": [
+   {
+    "value": "Sony",
+    "is_bold": true
+   },
+   {
+    "value": " ",
+    "is_bold": false
+   },
+   {
+    "value": "WH-1000XM5",
+    "is_bold": true
+   },
+   {
+    "value": " review, ",
+    "is_bold": false
+   },
+   {
+    "value": "price",
+    "is_bold": true
+   },
+   {
+    "value": " & specs - SoundGuys",
+    "is_bold": false
+   }
+  ],
+  "extract": [
+   {
+    "value": " All products featured are independently chosen by us. However, SoundGuys may receive a commission on orders placed through its retail links. See our ethi…",
+    "is_bold": false
+   }
+  ],
+  "source": "mwmbl"
+ },
+ {
+  "url": "https://www.techradar.com/reviews/sony-wh-1000xm5-wireless-headphones",
+  "title": [
+   {
+    "value": "Sony",
+    "is_bold": true
+   },
+   {
+    "value": " ",
+    "is_bold": false
+   },
+   {
+    "value": "WH-1000XM5",
+    "is_bold": true
+   },
+   {
+    "value": " Wireless Headphones review | TechRadar",
+    "is_bold": false
+   }
+  ],
+  "extract": [
+   {
+    "value": " TechRadar Verdict Still the best headphones in the world thanks to their class-leading noise-cancelling features and well-balanced audio, a steeper ",
+    "is_bold": false
+   },
+   {
+    "value": "price",
+    "is_bold": true
+   },
+   {
+    "value": "…",
+    "is_bold": false
+   }
+  ],
+  "source": "mwmbl"
+ },
+ {
+  "url": "https://au.pcmag.com/sony-wh-1000xm5",
+  "title": [
+   {
+    "value": "Sony",
+    "is_bold": true
+   },
+   {
+    "value": " ",
+    "is_bold": false
+   },
+   {
+    "value": "WH-1000XM5",
+    "is_bold": true
+   },
+   {
+    "value": " - Review 2022 - PCMag Australia",
+    "is_bold": false
+   }
+  ],
+  "extract": [
+   {
+    "value": " Cons ",
+    "is_bold": false
+   },
+   {
+    "value": "Sony",
+    "is_bold": true
+   },
+   {
+    "value": " ",
+    "is_bold": false
+   },
+   {
+    "value": "WH-1000XM5",
+    "is_bold": true
+   },
+   {
+    "value": " Specs With each new model, ",
+    "is_bold": false
+   },
+   {
+    "value": "Sony",
+    "is_bold": true
+   },
+   {
+    "value": "'s noise-cancelling headphones improve upon the previous formula, giving longtime industry leader Bos…",
+    "is_bold": false
+   }
+  ],
+  "source": "mwmbl"
+ },
+ {
+  "url": "https://www.gizmodo.com.au/2022/06/sony-wh-1000xm5-review/",
+  "title": [
+   {
+    "value": "Sony",
+    "is_bold": true
+   },
+   {
+    "value": " ",
+    "is_bold": false
+   },
+   {
+    "value": "WH-1000XM5",
+    "is_bold": true
+   },
+   {
+    "value": " Headphones Review",
+    "is_bold": false
+   }
+  ],
+  "extract": [
+   {
+    "value": " The XM5 Noise-Cancelling Headphones Are ",
+    "is_bold": false
+   },
+   {
+    "value": "Sony",
+    "is_bold": true
+   },
+   {
+    "value": "’s Best Yet At Gizmodo, we independently select and write about stuff we love and think you'll like too. We h…",
+    "is_bold": false
+   }
+  ],
+  "source": "mwmbl"
+ },
+ {
+  "url": "https://www.pcgamer.com/sony-wh1000xm5-headset-review/",
+  "title": [
+   {
+    "value": "Sony",
+    "is_bold": true
+   },
+   {
+    "value": " ",
+    "is_bold": false
+   },
+   {
+    "value": "WH-1000XM5",
+    "is_bold": true
+   },
+   {
+    "value": " headset review | PC Gamer",
+    "is_bold": false
+   }
+  ],
+  "extract": [
+   {
+    "value": " ",
+    "is_bold": false
+   },
+   {
+    "value": "Sony",
+    "is_bold": true
+   },
+   {
+    "value": " ",
+    "is_bold": false
+   },
+   {
+    "value": "WH-1000XM5",
+    "is_bold": true
+   },
+   {
+    "value": " Our Verdict The ",
+    "is_bold": false
+   },
+   {
+    "value": "Sony",
+    "is_bold": true
+   },
+   {
+    "value": " WH-1000XM5s improve on almost every aspect of the XM4s but it's not quite the slam dunk we'd hope for. It's still a …",
+    "is_bold": false
+   }
+  ],
+  "source": "mwmbl"
+ },
+ {
+  "url": "https://uk.pcmag.com/sony-wh-1000xm5",
+  "title": [
+   {
+    "value": "Sony",
+    "is_bold": true
+   },
+   {
+    "value": " ",
+    "is_bold": false
+   },
+   {
+    "value": "WH-1000XM5",
+    "is_bold": true
+   },
+   {
+    "value": " - Review 2022 - PCMag UK",
+    "is_bold": false
+   }
+  ],
+  "extract": [
+   {
+    "value": " Cons ",
+    "is_bold": false
+   },
+   {
+    "value": "Sony",
+    "is_bold": true
+   },
+   {
+    "value": " ",
+    "is_bold": false
+   },
+   {
+    "value": "WH-1000XM5",
+    "is_bold": true
+   },
+   {
+    "value": " Specs With each new model, ",
+    "is_bold": false
+   },
+   {
+    "value": "Sony",
+    "is_bold": true
+   },
+   {
+    "value": "'s noise-cancelling headphones improve upon the previous formula, giving longtime industry leader Bos…",
+    "is_bold": false
+   }
+  ],
+  "source": "mwmbl"
+ },
+ {
+  "url": "https://www.engadget.com/sony-wh-1000xm4-leak-222030335.html",
+  "title": [
+   {
+    "value": "Sony",
+    "is_bold": true
+   },
+   {
+    "value": "'s ",
+    "is_bold": false
+   },
+   {
+    "value": "WH-1000XM5",
+    "is_bold": true
+   },
+   {
+    "value": " noise-cancelling headphones could feature a ne…",
+    "is_bold": false
+   }
+  ],
+  "extract": [
+   {
+    "value": " ",
+    "is_bold": false
+   },
+   {
+    "value": "Sony",
+    "is_bold": true
+   },
+   {
+    "value": "'s ",
+    "is_bold": false
+   },
+   {
+    "value": "WH-1000XM5",
+    "is_bold": true
+   },
+   {
+    "value": " noise-cancelling headphones could feature a new design Since their release in 2020, ",
+    "is_bold": false
+   },
+   {
+    "value": "Sony",
+    "is_bold": true
+   },
+   {
+    "value": "'s WH-1000XM4 have consistently been among the …",
+    "is_bold": false
+   }
+  ],
+  "source": "mwmbl"
+ },
+ {
+  "url": "https://www.ifixit.com/Parts/Sony_WH-1000XM5",
+  "title": [
+   {
+    "value": "Sony",
+    "is_bold": true
+   },
+   {
+    "value": " ",
+    "is_bold": false
+   },
+   {
+    "value": "WH-1000XM5",
+    "is_bold": true
+   },
+   {
+    "value": " Parts | iFixit",
+    "is_bold": false
+   }
+  ],
+  "extract": [
+   {
+    "value": "Sony",
+    "is_bold": true
+   },
+   {
+    "value": " ",
+    "is_bold": false
+   },
+   {
+    "value": "WH-1000XM5",
+    "is_bold": true
+   },
+   {
+    "value": " Headphone parts for DIY repair. Batteries tested and guaranteed with fast shipping and easy returns.",
+    "is_bold": false
+   }
+  ],
+  "source": "mwmbl"
+ },
+ {
+  "url": "https://www.tomsguide.com/face-off/sony-wh-1000xm5-vs-airpods-max",
+  "title": [
+   {
+    "value": "Sony",
+    "is_bold": true
+   },
+   {
+    "value": " ",
+    "is_bold": false
+   },
+   {
+    "value": "WH-1000XM5",
+    "is_bold": true
+   },
+   {
+    "value": " vs. AirPods Max: Which headphones should you buy…",
+    "is_bold": false
+   }
+  ],
+  "extract": [
+   {
+    "value": " If you're in the market for new headphones, you might find yourself deciding between the ",
+    "is_bold": false
+   },
+   {
+    "value": "Sony",
+    "is_bold": true
+   },
+   {
+    "value": " ",
+    "is_bold": false
+   },
+   {
+    "value": "WH-1000XM5",
+    "is_bold": true
+   },
+   {
+    "value": " vs. AirPods Max. Both are some of the best headp…",
+    "is_bold": false
+   }
+  ],
+  "source": "mwmbl"
+ }
+]

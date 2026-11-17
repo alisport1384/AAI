@@ -302,6 +302,62 @@ private fun ListingsTab(vm: AppViewModel) {
 @Composable
 private fun KnowledgeTab(vm: AppViewModel) {
     var editing by remember { mutableStateOf<KnowledgeItem?>(null) }
+
+    // v0.8: "learn everything about X" — every engine, layered, until a round adds nothing.
+    var topic by remember { mutableStateOf("") }
+    Card(
+        Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("یادگیری عمیق یک موضوع", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "همهٔ موتورها پرسیده می‌شوند (نه چند تای ارزان)، صفحه‌ها خوانده و جمله‌ها به لایه‌های " +
+                    "پایه/ویژگی‌ها/قیمت/نظرها/به‌روزرسانی/منابع بخش می‌شوند؛ تا وقتی یک دور کامل " +
+                    "چیز تازه‌ای اضافه نکند ادامه می‌دهد.",
+                style = MaterialTheme.typography.bodySmall
+            )
+            OutlinedTextField(
+                value = topic,
+                onValueChange = { topic = it },
+                label = { Text("موضوع (مثلاً: هدفون سونی WH-1000XM5)") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = { vm.studyTopic(topic, deep = false) },
+                    enabled = !vm.studyRunning && topic.isNotBlank(),
+                    modifier = Modifier.weight(1f)
+                ) { Text(if (vm.studyRunning) "در حال یادگیری…" else "یاد بگیر") }
+                OutlinedButton(
+                    onClick = { vm.studyTopic(topic, deep = true) },
+                    enabled = !vm.studyRunning && topic.isNotBlank(),
+                    modifier = Modifier.weight(1f)
+                ) { Text("یادگیری عمیق‌تر") }
+            }
+            if (vm.studyRunning) LinearProgressIndicator(Modifier.fillMaxWidth())
+            vm.studySummary?.let { summary ->
+                Text(summary, style = MaterialTheme.typography.bodyMedium)
+                vm.studyLayers.forEach { (layer, count, sources) ->
+                    Text(
+                        "• $layer: $count نکته از $sources منبع",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+                if (vm.studyGaps.isNotEmpty()) {
+                    Text(
+                        "لایه‌های بی‌نتیجه: ${vm.studyGaps.joinToString("، ")}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+                vm.studyEngineLine?.let {
+                    Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+    }
     var editClaim by remember { mutableStateOf("") }
     var editCategory by remember { mutableStateOf(MemoryBank.CAT_FACT) }
     var query by remember { mutableStateOf("") }

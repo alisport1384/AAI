@@ -27,6 +27,11 @@ data class KnowledgeItem(
     val ttlDays: Int = KnowledgeBank.DEFAULT_TTL_DAYS,
     val sourceCount: Int = 1,
     val supersededById: String? = null,
+    /**
+     * v0.8 — the layer of the topic's structure this fact belongs to (پایه/ویژگی‌ها/قیمت/…).
+     * Empty for facts learned before v0.8 or by the simple question path.
+     */
+    val layer: String = "",
     val tags: List<String> = emptyList()
 ) {
     val fresh: Boolean get() = supersededById == null
@@ -139,6 +144,16 @@ object KnowledgeBank {
     }
 
     fun tags(claim: String, pack: MarketPack?): List<String> = MemoryBank.tags(claim, pack)
+
+    /**
+     * v0.8 — a fact harvested from a page has no clock of its own. Without this stamp it went in
+     * with timestamps of 0, [isStale] called it ancient the moment it was written, and the very
+     * knowledge the user asked to learn was invisible to the next question.
+     */
+    fun stamp(item: KnowledgeItem, now: Long): KnowledgeItem = item.copy(
+        createdAt = if (item.createdAt > 0) item.createdAt else now,
+        lastVerifiedAt = if (item.lastVerifiedAt > 0) item.lastVerifiedAt else now
+    )
 
     fun isStale(item: KnowledgeItem, now: Long, ttlDays: Int = item.ttlDays): Boolean {
         val reference = if (item.lastVerifiedAt > 0) item.lastVerifiedAt else item.createdAt

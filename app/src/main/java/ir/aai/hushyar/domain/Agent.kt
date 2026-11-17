@@ -408,6 +408,12 @@ class Agent(
                                 outcome.failures.entries.take(3).joinToString("؛ ") { "${it.key}: ${it.value}" }
                         )
                     }
+                    if (outcome.notes.isNotEmpty()) {
+                        add(
+                            (if (langTag == "en") "routes: " else "مسیر پاسخ: ") +
+                                outcome.notes.entries.take(3).joinToString("؛ ") { "${it.key}: ${it.value}" }
+                        )
+                    }
                 }
             )
         }
