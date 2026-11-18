@@ -44,7 +44,13 @@ class FakeTools(
     private val pack: MarketPack,
     private val search: SearchCore,
     var listings: List<Listing> = emptyList(),
-    var budget: ResearchBudget = ResearchBudget.BALANCED
+    var budget: ResearchBudget = ResearchBudget.BALANCED,
+    /** v0.13 — pages the server would return, exactly as sent (raw HTML), keyed by URL. */
+    var servedPages: Map<String, String> = emptyMap(),
+    /** URLs that must behave as unreachable (DNS failure / 404 / blocked). */
+    var failedUrls: Set<String> = emptySet(),
+    /** Every query the agent asked the web for; proves that a route did **not** search. */
+    val searchedQueries: MutableList<String> = mutableListOf()
 ) : AgentTools {
 
     override fun researchBudget(): ResearchBudget = budget
@@ -129,11 +135,17 @@ class FakeTools(
     }
 
     override fun webSearch(query: String, langTag: String): SearchReport {
+        searchedQueries += query
         logs.add(LogEvent(logs.size + 1L, clock, "web", "agent", "جستجو", query))
         return search.search(query, langTag)
     }
 
-    override fun fetchPage(url: String, langTag: String): ExtractedPage? = search.fetchPage(url, langTag)
+    override fun fetchPage(url: String, langTag: String): ExtractedPage? =
+        servedPages[url]?.let { ExtractedPage(url, "served", it) }
+            ?: if (url in failedUrls) null else search.fetchPage(url, langTag)
+
+    override fun fetchRawPage(url: String, langTag: String): String? =
+        if (url in failedUrls) null else servedPages[url]
 
     override fun logAppend(kind: String, actor: String, message: String, detail: String) {
         logs.add(LogEvent(logs.size + 1L, clock, kind, actor, message, detail))

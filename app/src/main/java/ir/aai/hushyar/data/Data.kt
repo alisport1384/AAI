@@ -801,6 +801,8 @@ class Repos(private val db: Db) {
     // ---------- event log (the assistant's own .md source) ----------
 
     fun log(kind: String, actor: String, message: String, detail: String = "") {
+        // خاموشِ پیش‌فرض باید در تمام مسیرها خاموش باشد؛ نه فقط جدول audit.
+        if (!loggingEnabled()) return
         val values = ContentValues().apply {
             put("at", now)
             put("kind", kind)

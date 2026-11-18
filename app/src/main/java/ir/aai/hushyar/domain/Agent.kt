@@ -1,5 +1,6 @@
 package ir.aai.hushyar.domain
 
+import ir.aai.hushyar.core.Html
 import ir.aai.hushyar.core.Jalali
 import ir.aai.hushyar.core.Lang
 import ir.aai.hushyar.core.LangDetect
@@ -52,6 +53,14 @@ interface AgentTools {
 
     fun webSearch(query: String, langTag: String): SearchReport
     fun fetchPage(url: String, langTag: String): ExtractedPage?
+
+    /**
+     * v0.13 — the page exactly as the server sent it. Needed for lines that article-shaped
+     * extraction throws away (a price line like «نبشی5نرمال 1تا3متر ۱۰۷۰۰۰» is 26 characters) and to
+     * read Telegram's per-post blocks. Default `null`: an implementation that cannot fetch raw
+     * says so instead of pretending.
+     */
+    fun fetchRawPage(url: String, langTag: String): String? = null
     fun insertListings(listings: List<Listing>): Int
 
     fun logAppend(kind: String, actor: String, message: String, detail: String)
@@ -135,6 +144,22 @@ class Agent(
         val recorder: (String, String, Map<String, String>, String) -> Unit =
             { thought, tool, args, observation -> step(thought, tool, args, observation) }
 
+        // ---- 0.5 v0.13: the sources the user handed us, before anything else ----
+        //
+        // «قیمت نبشی ۴ رو از منابعی که خودم دادم پیدا کن» + چهار نشانی. پیش از این نسخه، نشانیِ
+        // داخل پرسش هیچ مسیری نداشت: برنامه همان جملهٔ حاوی لینک‌ها را جستجو می‌کرد و صفحه‌ها را
+        // هرگز باز نمی‌کرد. حالا اول همان‌ها خوانده می‌شوند.
+        val handedLinks = UrlIngest.links(question)
+        if (handedLinks.isNotEmpty() && UrlIngest.asksPrice(question)) {
+            val ingest = ingestSources(handedLinks, question, langTag, recorder)
+            if (ingest.priced.isNotEmpty()) {
+                return userSourcesAnswer(question, ingest, langTag, steps, actions)
+            }
+            // No numeric price in the user's own sources → say exactly what each one did, and
+            // what the nearest numbers were, instead of a bare «پیدا نشد».
+            return userSourcesRefusal(question, ingest, langTag, steps, actions)
+        }
+
         // ---- 1. data commands ----
         val command = CommandParser.parse(question)
         if (command != null) {
@@ -185,6 +210,12 @@ class Agent(
                 steps, actions
             )
         }
+
+        // قیمتِ تازه‌ای که قبلاً از نشانیِ خودِ کاربر خواندیم پیش از مسیرهای کالاییِ عمومی
+        // بازیابی می‌شود؛ وگرنه آن مسیرها برای همان پرسش دوباره جستجوی وب راه می‌اندازند.
+        storedSourceAnswer(
+            question, tools.knowledgeAnswerable(question, 5), langTag, steps, actions
+        )?.let { return it }
 
         // ---- 2.5 کالاهای فولادی: اول بفهم، بعد از دانش خودت جواب بده، بعد جستجو، بعد حساب کن ----
         //
@@ -916,6 +947,254 @@ class Agent(
             if (langTag == "en") "No engine returned anything usable."
             else "هیچ موتوری نتیجهٔ قابل استفاده نداد."
         )
+    }
+
+    // ---------------------------------------------------------------- v0.13: user-given sources
+
+    private data class Ingested(
+        val keywordLabel: String,
+        val sizeLabel: String?,
+        val reports: List<UrlIngest.PageReport>,
+        val priced: List<UrlIngest.Offer>,
+        val contact: List<UrlIngest.Offer>
+    ) {
+        val label: String get() = listOfNotNull(keywordLabel, sizeLabel).joinToString(" ")
+    }
+
+    /** First open every link the user gave; only then follow at most one product link per page. */
+    private fun ingestSources(
+        links: List<String>,
+        question: String,
+        langTag: String,
+        step: (String, String, Map<String, String>, String) -> Unit
+    ): Ingested {
+        val keywords = UrlIngest.keywords(question)
+        val sizes = UrlIngest.sizes(question)
+        val reports = mutableListOf<UrlIngest.PageReport>()
+        val children = mutableListOf<String>()
+        val visited = mutableSetOf<String>()
+
+        fun readOne(url: String, original: Boolean) {
+            if (!visited.add(url)) return
+            val raw = runCatching { tools.fetchRawPage(url, langTag) }.getOrNull()
+            val html = raw ?: runCatching { tools.fetchPage(url, langTag)?.text }.getOrNull()
+            if (html.isNullOrBlank()) {
+                val problem = "صفحه باز نشد (شبکه، پاسخ سایت یا محدودیت دسترسی)"
+                reports.add(UrlIngest.PageReport(url, fetched = false, problem = problem))
+                step("بازکردن منبع ناموفق: $url", "sources.fetch", mapOf("url" to url), problem)
+                return
+            }
+            val docs = UrlIngest.documents(html, url)
+            val offers = docs.flatMap { UrlIngest.offers(it, keywords, sizes, url) }
+                .distinctBy { it.line }
+            val title = Html.title(html).orEmpty()
+            val lines = docs.sumOf { it.count { c -> c == '\n' } + if (it.isNotBlank()) 1 else 0 }
+            val priced = offers.count { it.status == UrlIngest.OfferStatus.PRICED }
+            val contact = offers.count { it.status == UrlIngest.OfferStatus.CONTACT_ONLY }
+            val problem = when {
+                raw == null -> "فقط متن استخراج‌شده رسید؛ احتمال حذف سطرهای کوتاه وجود دارد"
+                docs.isEmpty() -> "پاسخ خامِ سایت متن قابل‌خواندن نداشت؛ شاید صفحه با جاوااسکریپت ساخته شود"
+                priced == 0 -> "برای کالا و اندازهٔ خواسته‌شده، عدد قیمت در پاسخ خامِ سایت دیده نشد"
+                else -> ""
+            }
+            reports.add(UrlIngest.PageReport(url, true, title, lines, offers, problem))
+            step(
+                "خواندن ${if (original) "نشانی داده‌شده" else "صفحهٔ داخلی همان سایت"}: $url",
+                "sources.read", mapOf("url" to url, "docs" to docs.size.toString()),
+                "${Text.num(lines.toLong())} سطر بررسی شد؛ ${Text.num(priced.toLong())} قیمت، ${Text.num(contact.toLong())} مورد تماس" +
+                    if (problem.isNotBlank()) "؛ $problem" else ""
+            )
+            if (original && raw != null && priced == 0) {
+                children.addAll(UrlIngest.relevantLinks(raw, url, keywords, max = 1))
+            }
+        }
+
+        links.forEach { readOne(it, original = true) }
+        children.distinct().filter { it !in visited }.take(4).forEach { readOne(it, original = false) }
+        val priced = reports.flatMap { it.offers }
+            .filter { it.status == UrlIngest.OfferStatus.PRICED }
+        val contact = reports.flatMap { it.offers }
+            .filter { it.status == UrlIngest.OfferStatus.CONTACT_ONLY }
+        return Ingested(
+            keywordLabel = keywords.joinToString(" ").ifBlank { "کالای نامشخص" },
+            sizeLabel = sizes.joinToString(" و ").takeIf { it.isNotBlank() },
+            reports = reports,
+            priced = priced,
+            contact = contact
+        )
+    }
+
+    /**
+     * Save observations with *different variants* in different topics, so the weight ۸/۵ کیلو
+     * cannot overwrite ۹ کیلو merely because their price differs by less than ۱۰٪. The source's
+     * unit remains unknown when it did not print one. Price records expire after three days.
+     */
+    private fun rememberSourcePrices(
+        ingest: Ingested,
+        steps: MutableList<AgentStep>,
+        actions: MutableList<String>
+    ): List<String> {
+        val learned = mutableListOf<String>()
+        val now = tools.now()
+        for (offer in ingest.priced.take(24)) {
+            val value = offer.amountToman ?: continue
+            val variant = Text.normalize(
+                offer.line.substringBefore(" ⟶ ").substringBefore(" | قیمت:")
+                    .replace(Regex("""[۰-۹0-9][۰-۹0-9٬,]{3,}\s*(?:تومان|ریال)?\s*$"""), "")
+                    .trim()
+            )
+            val key = Similarity.fnv1a64(variant).toString(16)
+            val topic = KnowledgeBank.topicKey("قیمت ${ingest.label}") + "|گونه:$key"
+            val id = "source-" + Similarity.fnv1a64(
+                "$topic|${offer.sourceUrl}|$value|${offer.currencyWord}"
+            ).toString(16)
+            val item = KnowledgeItem(
+                id = id, topic = topic, question = "قیمت ${ingest.label}",
+                claim = offer.line.take(500), category = UrlIngest.SOURCE_PRICE_CATEGORY,
+                numericValue = value.toDouble(), unit = offer.currencyWord ?: "واحد نامشخص",
+                url = offer.sourceUrl, domain = KnowledgeBank.draftHost(offer.sourceUrl),
+                confidence = if (offer.currencyWord == null) 0.55 else 0.75,
+                createdAt = now, lastVerifiedAt = now, ttlDays = 3,
+                layer = "قیمت", tags = listOf("منبع داده‌شده", "قیمتِ ردیفی")
+            )
+            val result = runCatching { tools.knowledgeStore(item) }.getOrNull()
+            if (result != null && result.decision != KnowledgeDecision.IGNORE) {
+                actions.add("knowledge.${result.decision.name.lowercase()}:${result.id}")
+                learned.add("${KnowledgeBank.draftHost(offer.sourceUrl)}: ${offer.line.take(65)}")
+            }
+        }
+        steps.add(AgentStep(
+            steps.size + 1, "ثبت قیمت‌های خوانده‌شده در دانش محلی", "knowledge.store",
+            mapOf("matched" to ingest.priced.size.toString(), "saved" to learned.size.toString()),
+            "${Text.num(learned.size.toLong())} ردیف ذخیره/بازبینی شد؛ هر گونهٔ کالا جدا، عمر قیمت ۳ روز"
+        ))
+        return learned.take(5)
+    }
+
+    /** A number without a currency is still a *printed number*, not a Toman claim. */
+    private fun userSourcesAnswer(
+        question: String,
+        ingest: Ingested,
+        langTag: String,
+        steps: MutableList<AgentStep>,
+        actions: MutableList<String>
+    ): AgentOutcome {
+        val learned = rememberSourcePrices(ingest, steps, actions)
+        val bullets = mutableListOf<String>()
+        val citations = mutableListOf<Citation>()
+        ingest.priced.take(6).forEachIndexed { index, offer ->
+            bullets.add(
+                "${UrlIngest.displayAmount(offer)} — «${offer.line.take(165)}» " +
+                    "(${Html.domainOf(offer.sourceUrl) ?: offer.sourceUrl})"
+            )
+            citations.add(Citation(
+                ref = "S${index + 1}",
+                label = "${Html.domainOf(offer.sourceUrl) ?: offer.sourceUrl}: ${offer.line.take(80)}",
+                url = offer.sourceUrl
+            ))
+        }
+        if (ingest.priced.size > 6) {
+            bullets.add("۶ ردیف نخست از ${Text.num(ingest.priced.size.toLong())} ردیفِ قیمت‌دار نشان داده شد؛ بقیه در همین منابع‌اند.")
+        }
+        if (ingest.contact.isNotEmpty()) {
+            bullets.add("برای بعضی گونه‌ها قیمت عددی نیست و منبع «تماس» نوشته: " +
+                ingest.contact.take(2).joinToString("؛ ") { "«${it.line.take(80)}»" })
+        }
+        ingest.reports.filter { it.offers.none { offer -> offer.status == UrlIngest.OfferStatus.PRICED } }
+            .take(4).forEach { report ->
+                val status = if (report.fetched) "باز شد، ولی عددِ این کالا/اندازه در همین صفحه نبود" else report.problem
+                bullets.add("${report.url}: $status")
+            }
+        val text = if (ingest.priced.size == 1) {
+            "در منبعی که دادی برای ${ingest.label} این عدد پیدا شد: ${UrlIngest.displayAmount(ingest.priced.first())}"
+        } else {
+            "برای ${ingest.label} چند قیمتِ متفاوت در منابعی که دادی پیدا شد؛ هر ردیف و منبع جداگانه آمده است."
+        }
+        tools.logAppend("answer", "agent", "sources.answer", question.take(200))
+        val answer = Answer(
+            intent = "price-from-sources", text = text,
+            bullets = bullets, citations = citations,
+            confidence = if (ingest.priced.any { it.currencyWord == null }) 0.55 else 0.75,
+            lang = langTag,
+            trace = listOf("نشانی‌های داده‌شده باز شدند؛ هر قیمت با ردیف و نشانیِ خودش آمده است.",
+                "در این مسیر مدل و موتور جستجو عددی نساختند."),
+            actions = actions, learned = learned
+        )
+        return AgentOutcome(answer, steps, actions)
+    }
+
+    private fun userSourcesRefusal(
+        question: String,
+        ingest: Ingested,
+        langTag: String,
+        steps: List<AgentStep>,
+        actions: MutableList<String>
+    ): AgentOutcome {
+        val bullets = mutableListOf<String>()
+        ingest.reports.forEach { report ->
+            val status = when {
+                !report.fetched -> report.problem
+                report.offers.any { it.status == UrlIngest.OfferStatus.CONTACT_ONLY } ->
+                    "صفحه باز شد (${Text.num(report.lines.toLong())} سطر)؛ برای همین کالا و اندازه «تماس» یا عدم موجودی نوشته، نه عدد قیمت"
+                else -> "صفحه باز شد (${Text.num(report.lines.toLong())} سطر)؛ ${report.problem.ifBlank { "عددِ قیمت نبود" }}"
+            }
+            bullets.add("${report.url}: $status")
+            report.offers.take(2).forEach { offer ->
+                bullets.add("شاهد (${Html.domainOf(report.url) ?: report.url}): «${offer.line.take(120)}»")
+            }
+        }
+        bullets.add("قیمتِ اندازه‌های دیگر را جای این کالا نگذاشتم؛ عددی برای پاسخ پیدا نشد.")
+        val citations = ingest.reports.filter { it.fetched }.mapIndexed { index, report ->
+            Citation("S${index + 1}", "${Html.domainOf(report.url) ?: report.url} (${Text.num(report.lines.toLong())} سطر)", report.url)
+        }
+        tools.logAppend("answer", "agent", "sources.refused", question.take(200))
+        val answer = Answer(
+            intent = "price-from-sources", text = "قیمت ${ingest.label} در منابعی که دادی پیدا نشد",
+            bullets = bullets, citations = citations,
+            confidence = 0.0, refused = true, lang = langTag,
+            trace = listOf("نشانی‌های داده‌شده بررسی شدند؛ برای این کالا و اندازه عددِ قابل انتساب پیدا نشد."),
+            actions = actions
+        )
+        return AgentOutcome(answer, steps, actions)
+    }
+
+    /** Reuse only a fresh, size-matched *source observation*, without changing its currency. */
+    private fun storedSourceAnswer(
+        question: String,
+        items: List<KnowledgeItem>,
+        langTag: String,
+        steps: List<AgentStep>,
+        actions: List<String>
+    ): AgentOutcome? {
+        if (QuestionReader.classify(Text.normalize(question)) != AskType.PRICE || needsFreshData(question)) return null
+        val sourceItems = items.filter { it.category == UrlIngest.SOURCE_PRICE_CATEGORY }
+        if (sourceItems.isEmpty()) return null
+        val first = sourceItems.first()
+        val label = UrlIngest.keywords(question).joinToString(" ") +
+            UrlIngest.sizes(question).takeIf { it.isNotEmpty() }
+                ?.joinToString(" و ", prefix = " ").orEmpty()
+        val lines = sourceItems.take(5).mapIndexed { index, item ->
+            val amount = item.numericValue?.toLong()
+            val displayed = if (amount == null) "پیدا نشد" else when (item.unit) {
+                "ریال" -> "${UrlIngest.money(amount)} (تبدیل از ریال؛ تقسیم بر ۱۰)"
+                "تومان" -> UrlIngest.money(amount)
+                else -> "${Text.num(amount)} (واحد پول در سطر مشخص نیست)"
+            }
+            "${Text.num((index + 1).toLong())}. $displayed — «${item.claim.take(140)}»"
+        }
+        val answer = Answer(
+            intent = "knowledge.source-price",
+            text = "عددهای قبلاً خوانده‌شده برای $label؛ آخرین بازبینی ${Jalali.format(first.lastVerifiedAt)} (قیمت روزِ تأییدنشده)",
+            bullets = lines + "این پاسخ از دانشِ ذخیره‌شده است؛ صفحه‌ها در این نوبت باز نشدند.",
+            citations = sourceItems.take(5).mapIndexed { index, item ->
+                Citation("K${index + 1}", item.domain, item.url)
+            },
+            confidence = sourceItems.map { it.confidence }.average().coerceIn(0.3, 0.75),
+            lang = langTag,
+            trace = listOf("دانش منبعیِ تازه خوانده شد؛ در این نوبت درخواستی به شبکه فرستاده نشد."),
+            actions = actions
+        )
+        return AgentOutcome(answer, steps, actions)
     }
 
     private fun note(text: String, langTag: String): List<String> = listOf(if (langTag == "en") "— $text" else "— $text")

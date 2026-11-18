@@ -295,6 +295,9 @@ class AndroidTools(
         return report
     }
 
+    override fun fetchRawPage(url: String, langTag: String): String? =
+        runCatching { search.fetchRaw(url, langTag) }.getOrNull()
+
     override fun fetchPage(url: String, langTag: String): ExtractedPage? {
         val page = search.fetchPage(url, langTag)
         repos.log(

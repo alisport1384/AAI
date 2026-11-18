@@ -49,6 +49,7 @@ import ir.aai.hushyar.domain.KnowledgeBank
 import ir.aai.hushyar.domain.KnowledgeItem
 import ir.aai.hushyar.domain.AgentBriefing
 import ir.aai.hushyar.domain.AgentDecision
+import ir.aai.hushyar.domain.UrlIngest
 import ir.aai.hushyar.domain.Growth
 import ir.aai.hushyar.domain.LocalAction
 import ir.aai.hushyar.domain.LocalBrain
@@ -924,7 +925,12 @@ class AppViewModel(
                 marketAttributes = pack?.attributes?.map { it.label }.orEmpty(),
                 gaps = known.isEmpty().let { if (it) listOf("چیزی ذخیره نشده") else emptyList() }
             )
-            val decision = LocalPlanner.decide(
+            // کاربر خودش نشانی داده است: *پیش* از مدل و پویش/یادگیریِ خودکار همان صفحه‌ها را
+            // باز می‌کنیم. مدل کوچک نه قیمت را استخراج می‌کند و نه حق ساختن عدد دارد.
+            val handedSources = UrlIngest.hasLinks(question) && UrlIngest.asksPrice(question)
+            val decision = if (handedSources) {
+                AgentDecision(LocalAction.RESEARCH, question, "اول نشانی‌های داخل پرسش را باز کن", false)
+            } else LocalPlanner.decide(
                 request = question,
                 lang = langForPlan,
                 briefing = briefing,
@@ -974,7 +980,7 @@ class AppViewModel(
             // v0.8: a knowledge request ("یاد بگیر…", "همه‌چیز درباره…") runs the full study loop
             // first — every engine, layered — so the answer below is built from fresh material
             // that also stays for later questions.
-            if (StudyTrigger.wantsStudy(question)) {
+            if (!handedSources && StudyTrigger.wantsStudy(question)) {
                 val topic = StudyTrigger.topicOf(question)
                 val langTag = if (topic.any { it in '\u0600'..'\u06FF' }) "fa" else "en"
                 val brain = if (localModel.usingForAnswers && engine.ready) LocalBrain(engine, localModel.spec) else null
@@ -1021,15 +1027,21 @@ class AppViewModel(
                 observation = briefing.prompt().take(400)
             )
             outcome = outcome.copy(steps = listOf(brainStep) + outcome.steps.mapIndexed { i, s -> s.copy(index = i + 1) })
-            val transcript = Markdown.answer(question, outcome.answer, outcome.steps, System.currentTimeMillis())
-            val file = store.writeLog("qa-${store.stamp()}", transcript)
-            repos.audit("agent", "qa.answer", outcome.answer.intent, "refused=${outcome.answer.refused} md=${file.name}")
+            // لاگ واقعاً پیش‌فرض خاموش است: نه فقط جدول audit، بلکه فایل QA و جدول event هم
+            // خودبه‌خود نوشته نمی‌شوند. خروجی صریحِ کاربر همچنان با دکمهٔ خودش ساخته می‌شود.
+            if (repos.loggingEnabled()) {
+                val transcript = Markdown.answer(question, outcome.answer, outcome.steps, System.currentTimeMillis())
+                val file = store.writeLog("qa-${store.stamp()}", transcript)
+                repos.audit("agent", "qa.answer", outcome.answer.intent, "refused=${outcome.answer.refused} md=${file.name}")
+            }
             // v0.5: learn from the question we just answered — a light pass on the same question, so
             // the next similar one is faster (a case hit costs zero network rounds).
             // v0.10: پاسخ‌های «کالا/قیمت» از جدول و محاسبه آمده‌اند و مقدارشان تاریخ دارد؛
             // فرستادنشان به پروندهٔ پاسخ‌ها باعث می‌شد سؤال بعدی قیمت کهنه را از پرونده بخواند.
             val isMaterialAnswer = outcome.answer.intent.startsWith("material.")
-            if (!outcome.answer.refused && !isMaterialAnswer) runCatching { proactive.afterAnswer(question) }
+            if (!outcome.answer.refused && !isMaterialAnswer && !handedSources) {
+                runCatching { proactive.afterAnswer(question) }
+            }
             outcome
         }) { outcome ->
             lastAnswer = outcome.answer

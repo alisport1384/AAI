@@ -336,6 +336,12 @@ object KnowledgeBank {
         val key = topicKey(question)
         val queryTokens = Text.contentTokens(question).toSet()
         return items.filter { it.fresh && !isStale(it, now) && mentionsSubject(question, it) }
+            // A price stored from a user-given URL must match the product *and its size*, not
+            // merely share the word «نبشی». «نبشی۵ | ضخامت ۴» cannot answer «نبشی۴».
+            .filter { item ->
+                item.category != UrlIngest.SOURCE_PRICE_CATEGORY ||
+                    UrlIngest.matches(item.claim, UrlIngest.keywords(question), UrlIngest.sizes(question))
+            }
             .map { item ->
                 val topicMatch = if (item.topic == key) 1.0 else Similarity.containment(Text.contentTokens(item.topic).toSet(), queryTokens) * 0.8
                 val claimRelevance = Similarity.containment(queryTokens, Text.contentTokens(item.claim).toSet())

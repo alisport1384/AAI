@@ -28,6 +28,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import ir.aai.hushyar.AppViewModel
+import ir.aai.hushyar.core.Text as PersianNumber
 import ir.aai.hushyar.domain.Answer
 import ir.aai.hushyar.domain.Citation
 
@@ -131,7 +132,7 @@ fun AskScreen(vm: AppViewModel) {
                 HorizontalDivider()
                 vm.steps.take(14).forEach { step ->
                     Text(
-                        "${step.index}. ${step.tool} — ${step.thought}",
+                        "${PersianNumber.num(step.index.toLong())}. ${stepLabel(step.tool)} — ${step.thought}",
                         style = MaterialTheme.typography.labelSmall
                     )
                     if (step.observation.isNotBlank()) {
@@ -182,6 +183,22 @@ fun AskScreen(vm: AppViewModel) {
             }
         }
     }
+}
+
+/** شناسهٔ ابزار در کد و لاگ می‌ماند؛ در صفحه فقط نام فارسی نشان داده می‌شود. */
+private fun stepLabel(tool: String): String = when (tool) {
+    "input" -> "دریافت پرسش"
+    "sources.fetch" -> "بازکردن منبع"
+    "sources.read" -> "خواندن منبع"
+    "knowledge.store" -> "ثبت در دانش"
+    "knowledge.lookup", "knowledge.answer" -> "بررسی دانش"
+    "catalog.ask" -> "بررسی داده‌های محلی"
+    "memory.search", "memory.write" -> "بررسی حافظه"
+    "research.start", "web.search", "search.extract" -> "پژوهش وب"
+    "web.fetch" -> "خواندن صفحهٔ وب"
+    "brain/local-model" -> "مدل محلی"
+    "brain/rules" -> "قاعدهٔ قطعی"
+    else -> "گام بررسی"
 }
 
 /** The answer itself: headline, bullets, sources. Nothing internal. */

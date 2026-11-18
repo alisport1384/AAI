@@ -1105,6 +1105,19 @@ class SearchCore(
         return (query + " " + picked.take(3).joinToString(" ")).trim()
     }
 
+    /**
+     * v0.13 — the page as sent. Article extraction keeps lines of 40+ characters, which drops a
+     * price line like «نبشی5نرمال 1تا3متر ۱۰۷۰۰۰»; and Telegram needs its per-post blocks.
+     */
+    fun fetchRaw(url: String, langTag: String = "fa"): String? {
+        val response = try {
+            http.get(HttpRequest(url, HttpDefaults.headers(langTag)))
+        } catch (_: Throwable) {
+            return null
+        }
+        return response.body.takeIf { response.ok && it.isNotBlank() }
+    }
+
     fun fetchPage(url: String, langTag: String = "fa", maxChars: Int = 6_000): ExtractedPage? {
         val response = try {
             http.get(HttpRequest(url, HttpDefaults.headers(langTag)))
