@@ -112,7 +112,8 @@ class UrlIngestTest {
         val amounts = priced.mapNotNull { it.amountToman }.toSet()
         assertTrue("126,500 and 125,500 must be read: $amounts", amounts.containsAll(setOf(126_500L, 125_500L)))
         assertTrue("per-kilo unit must survive: $priced", priced.all { it.unit == "کیلو" || it.unit == "کیلوگرم" })
-        assertEquals("both normal-size lines say «تماس»", 2, contact.size)
+        assertEquals("two normal-size lines and one light prefab line say «تماس»", 3, contact.size)
+        assertEquals(2, contact.count { it.line.contains("نرمال") })
         assertTrue(contact.all { it.amountToman == null })
         assertTrue("«نبشی 5» must not answer a «نبشی 4» question",
             offers.none { it.line.contains("نبشی5") })
