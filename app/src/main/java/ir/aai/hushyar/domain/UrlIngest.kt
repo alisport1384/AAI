@@ -83,16 +83,41 @@ object UrlIngest {
         "بخون", "نگاه", "ببین", "جستجو", "سرچ", "لینک", "لینکها", "آدرس", "سایت", "سایتها",
         "صفحه", "صفحهها", "کانال", "تلگرام", "رو", "از", "که", "این", "اینها", "همین", "لطفا",
         "لطفاً", "است", "هست", "چند", "چقدر", "چنده", "الان", "امروز", "بازار", "قیمت",
-        "جواب", "پاسخ", "بهم", "بده", "بگو", "بگویید", "برای", "میشه", "میتونی", "بدین"
+        "جواب", "پاسخ", "بهم", "بده", "بگو", "بگویید", "برای", "میشه", "میتونی", "بدین",
+        "استخراج", "بررسی", "بیار", "بیرون", "بنویس", "نمایش", "بکش", "ازش", "نشون", "نشان"
     )
 
-    /** `نبشی ۴` و `نبشی4فابریک` هر دو اندازهٔ ۴ می‌دهند؛ عددِ داخل لینک نادیده است. */
+    /**
+     * عددِ کنار **نام کالا** سایز است؛ «نبشی ۴، وزن ۸/۵ کیلو» سه سایزِ ۴ و ۸ و ۵ نیست.
+     * اگر هیچ عددِ متصل به کالا یا «سایز/اندازه» نبود، تنها یک عددِ کوتاهِ بی‌ابهام پذیرفته می‌شود.
+     */
     fun sizes(question: String): List<String> {
         val text = Text.normalize(withoutLinks(question))
+        // واژهٔ اول هستهٔ کالا است؛ «نرمال ۲تا۳متر» یا «وزن ۸/۵کیلو» سایزِ کالا نیست.
+        val nearProduct = keywords(question).firstOrNull()
+            ?.let { productSizes(text, it) }.orEmpty()
+        if (nearProduct.isNotEmpty()) return nearProduct
+        val tagged = Regex("""(?:سایز|اندازه|مدل|شماره)\s*([0-9]{1,3})(?![0-9])""")
+            .findAll(text).map { it.groupValues[1] }.distinct().toList()
+        if (tagged.isNotEmpty()) return tagged
         val separated = LETTER_NUMBER_EDGE.replace(text, " ")
-        return Text.tokens(separated)
+        val candidates = Text.tokens(separated)
             .filter { token -> token.all { c -> c.isDigit() } && token.length <= 3 }
             .distinct()
+        return candidates.takeIf { it.size == 1 } ?: emptyList()
+    }
+
+    private val RANGE_SPEC = Regex("""[0-9]{1,3}\s*تا\s*[0-9]{1,3}\s*(?:کیلوگرم|کیلو|گرم|متر|میل)""")
+    private val UNIT_SPEC = Regex("""[0-9]{1,3}(?:[/٫.,][0-9]{1,3})?\s*(?:کیلوگرم|کیلو|گرم|متر|میل)""")
+
+    /** وزن/طولِ صریحِ خواسته‌شده باید در ردیفِ شاهد هم باشد، نه فقط سایز اصلی. */
+    fun qualifiers(question: String): List<String> {
+        val text = Text.normalize(withoutLinks(question))
+        val ranges = RANGE_SPEC.findAll(text).toList()
+        return (ranges.map { it.value } + UNIT_SPEC.findAll(text)
+            .filter { found -> ranges.none { found.range.first in it.range } }
+            .map { it.value }.toList())
+            .map { it.replace(Regex("\\s+"), "") }.distinct()
     }
 
     fun isTelegram(url: String): Boolean {
@@ -217,22 +242,28 @@ object UrlIngest {
     }
 
     /** Size written right after a product word, optionally via a «سایز» column/word. */
-    internal fun productSize(row: String, keyword: String): String? {
+    internal fun productSizes(row: String, keyword: String): List<String> {
         val norm = Text.normalize(row)
         val expr = Regex(
             """${Regex.escape(Text.normalize(keyword))}\s*(?:[-–_]\s*)?(?:(?:سایز|اندازه|مدل|شماره)\s*)?([0-9]{1,3})(?![0-9])"""
         )
-        return expr.find(norm)?.groupValues?.get(1)
+        return expr.findAll(norm).map { it.groupValues[1] }.distinct().toList()
     }
 
-    internal fun matches(row: String, keywords: List<String>, sizes: List<String>): Boolean {
+    internal fun matches(
+        row: String, keywords: List<String>, sizes: List<String>, qualifiers: List<String> = emptyList()
+    ): Boolean {
         if (keywords.isEmpty()) return false
         val norm = Text.normalize(row)
         if (!keywords.all { norm.contains(Text.normalize(it)) }) return false
+        val compact = norm.replace(Regex("\\s+"), "")
+        if (!qualifiers.all { compact.contains(it) }) return false
         if (sizes.isEmpty()) return true
-        val explicit = keywords.mapNotNull { productSize(row, it) }
+        val explicit = keywords.firstOrNull()?.let { productSizes(row, it) }.orEmpty()
+        // Two different product sizes on one line: the price cannot safely be assigned to either.
+        if (explicit.size > 1) return false
         // If «نبشی۵ | ضخامت: ۴» is printed, ۴ is not the size of this نبشی.
-        if (explicit.isNotEmpty()) return explicit.any { it in sizes }
+        if (explicit.isNotEmpty()) return explicit.first() in sizes
         // «نبشی ... سایز ۴» is okay, but a bare ۴ in weight/thickness/date is not.
         return Regex("""(?:سایز|اندازه|مدل|شماره)\s*([0-9]{1,3})(?![0-9])""")
             .findAll(norm).any { it.groupValues[1] in sizes }
@@ -304,13 +335,14 @@ object UrlIngest {
         keywords: List<String>,
         sizes: List<String>,
         sourceUrl: String,
-        lookAhead: Int = 2
+        lookAhead: Int = 2,
+        qualifiers: List<String> = emptyList()
     ): List<Offer> {
         if (keywords.isEmpty()) return emptyList()
         val rows = text.split('\n')
         val found = mutableListOf<Offer>()
         for ((index, row) in rows.withIndex()) {
-            if (!matches(row, keywords, sizes)) continue
+            if (!matches(row, keywords, sizes, qualifiers)) continue
             if (CONTACT.containsMatchIn(row)) {
                 found.add(Offer(row, sourceUrl, null, null, null, OfferStatus.CONTACT_ONLY, "منبع عددی اعلام نکرد"))
                 continue

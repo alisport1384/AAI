@@ -970,6 +970,7 @@ class Agent(
     ): Ingested {
         val keywords = UrlIngest.keywords(question)
         val sizes = UrlIngest.sizes(question)
+        val qualifiers = UrlIngest.qualifiers(question)
         val reports = mutableListOf<UrlIngest.PageReport>()
         val children = mutableListOf<String>()
         val visited = mutableSetOf<String>()
@@ -985,7 +986,7 @@ class Agent(
                 return
             }
             val docs = UrlIngest.documents(html, url)
-            val offers = docs.flatMap { UrlIngest.offers(it, keywords, sizes, url) }
+            val offers = docs.flatMap { UrlIngest.offers(it, keywords, sizes, url, qualifiers = qualifiers) }
                 .distinctBy { it.line }
             val title = Html.title(html).orEmpty()
             val lines = docs.sumOf { it.count { c -> c == '\n' } + if (it.isNotBlank()) 1 else 0 }

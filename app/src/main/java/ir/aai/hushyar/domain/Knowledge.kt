@@ -340,7 +340,10 @@ object KnowledgeBank {
             // merely share the word «نبشی». «نبشی۵ | ضخامت ۴» cannot answer «نبشی۴».
             .filter { item ->
                 item.category != UrlIngest.SOURCE_PRICE_CATEGORY ||
-                    UrlIngest.matches(item.claim, UrlIngest.keywords(question), UrlIngest.sizes(question))
+                    UrlIngest.matches(
+                        item.claim, UrlIngest.keywords(question), UrlIngest.sizes(question),
+                        UrlIngest.qualifiers(question)
+                    )
             }
             .map { item ->
                 val topicMatch = if (item.topic == key) 1.0 else Similarity.containment(Text.contentTokens(item.topic).toSet(), queryTokens) * 0.8

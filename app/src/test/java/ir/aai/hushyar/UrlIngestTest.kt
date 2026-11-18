@@ -55,6 +55,15 @@ class UrlIngestTest {
     }
 
     @Test
+    fun sizeIsTheNumberBesideTheProductNotTheWeightOrLength() {
+        val q = "قیمت نبشی ۴ با وزن ۸/۵ کیلو رو از t.me/s/ahanalathoseini استخراج کن"
+        assertEquals(listOf("4"), UrlIngest.sizes(q))
+        assertEquals(listOf("8/5کیلو"), UrlIngest.qualifiers(q))
+        assertEquals(listOf("نبشی", "کیلو"), UrlIngest.keywords(q))
+        assertEquals(listOf("4", "5"), UrlIngest.sizes("قیمت نبشی۴ و نبشی۵"))
+    }
+
+    @Test
     fun bareDomainsAndChannelAddressesAreAcceptedAsUserSources() {
         val links = UrlIngest.links("قیمت نبشی ۴: ahanmelal.com، asreahan.com و t.me/s/ahanalathoseini")
         assertEquals(
@@ -126,6 +135,30 @@ class UrlIngestTest {
         val first = offers.first { it.line.contains("7/5") }
         assertEquals(UrlIngest.OfferStatus.CONTACT_ONLY, first.status)
         assertEquals(null, first.amountToman)
+    }
+
+    @Test
+    fun aWeightConstraintMustSelectOnlyTheMatchingVariant() {
+        val url = "https://t.me/s/ahanalathoseini"
+        val tools = sourceTools(mapOf(url to telegramHtml))
+        val result = Agent(tools).run("قیمت نبشی ۴ با وزن ۸/۵ کیلو رو از $url استخراج کن")
+        assertFalse(result.answer.refused)
+        val text = result.answer.bullets.joinToString("\n")
+        assertTrue(text.contains("۱۲۶٬۵۰۰"))
+        assertFalse(text.contains("۱۲۵٬۵۰۰"))
+        assertFalse(text.contains("۱۲۳٬۰۰۰"))
+        assertTrue(tools.searchedQueries.isEmpty())
+    }
+
+    @Test
+    fun normalSizeFourThatSaysContactDoesNotBorrowThePrefabPrice() {
+        val url = "https://t.me/s/ahanalathoseini"
+        val tools = sourceTools(mapOf(url to telegramHtml))
+        val result = Agent(tools).run("قیمت نبشی۴ نرمال ۲تا۳متر از $url چنده؟")
+        assertTrue(result.answer.refused)
+        assertTrue(result.answer.bullets.any { it.contains("تماس") })
+        assertFalse(result.answer.bullets.joinToString().contains("۱۲۶٬۵۰۰"))
+        assertFalse(result.answer.bullets.joinToString().contains("۱۲۵٬۵۰۰"))
     }
 
     @Test
