@@ -1,6 +1,7 @@
 package ir.aai.hushyar
 
 import ir.aai.hushyar.domain.Agent
+import ir.aai.hushyar.domain.SearchCore
 import ir.aai.hushyar.domain.UrlIngest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
