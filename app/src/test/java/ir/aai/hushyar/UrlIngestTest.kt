@@ -265,12 +265,12 @@ class UrlIngestTest {
 
     @Test
     fun aCssGridIsReadRowByRowUsingVisiblePriceNotHiddenTaxAttributes() {
-        val rows = UrlIngest.documents(angleGrid, "https://ahanmelal.com/steel-angle-price")
+        val rows = UrlIngest.documents(angleGrid, "https://ahanmelal.com/steel-t-bars-studs-angles/steel-angle-price")
         assertEquals(2, rows.size)
         assertTrue(rows.first().contains("ضخامت (mm): 2"))
         assertTrue(rows.first().contains("قیمت: 120,636"))
         val offers = rows.flatMap {
-            UrlIngest.offers(it, listOf("نبشی"), listOf("4"), "https://ahanmelal.com/steel-angle-price")
+            UrlIngest.offers(it, listOf("نبشی"), listOf("4"), "https://ahanmelal.com/steel-t-bars-studs-angles/steel-angle-price")
         }
         assertEquals(1, offers.size)
         assertEquals(120_636L, offers.first().amountToman)
@@ -282,21 +282,35 @@ class UrlIngestTest {
     @Test
     fun aHomepageProductLinkIsFollowedAndCitedWithoutUsingASearchEngine() {
         val home = """
-            <html><body><a href="/steel-angle-price">قیمت نبشی</a>
+            <html><body><a href="/steel-t-bars-studs-angles/steel-angle-price">قیمت نبشی</a>
             <p>نبشی 4 نستا: 5000 تومان کاهش</p></body></html>
         """.trimIndent()
         val tools = sourceTools(mapOf(
             "https://ahanmelal.com" to home,
-            "https://ahanmelal.com/steel-angle-price" to angleGrid
+            "https://ahanmelal.com/steel-t-bars-studs-angles/steel-angle-price" to angleGrid
         ))
         val answer = Agent(tools).run("قیمت نبشی ۴؟ ahanmelal.com")
         assertFalse(answer.answer.refused)
         assertTrue(answer.answer.bullets.joinToString().contains("۱۲۰٬۶۳۶"))
         assertFalse(answer.answer.bullets.joinToString().contains("۵٬۰۰۰"))
-        assertTrue(answer.answer.citations.any { it.url == "https://ahanmelal.com/steel-angle-price" })
+        assertTrue(answer.answer.citations.any { it.url == "https://ahanmelal.com/steel-t-bars-studs-angles/steel-angle-price" })
         assertTrue(answer.steps.any { it.tool == "sources.read" &&
-            it.args["url"] == "https://ahanmelal.com/steel-angle-price" })
+            it.args["url"] == "https://ahanmelal.com/steel-t-bars-studs-angles/steel-angle-price" })
         assertTrue(tools.searchedQueries.isEmpty())
+    }
+
+    @Test
+    fun aGenericProductLinkCanStillBeOpenedForAWeightConstrainedQuestion() {
+        val child = "https://ahanmelal.com/steel-t-bars-studs-angles/steel-angle-price"
+        val home = "<a href=\"/steel-t-bars-studs-angles/steel-angle-price\">قیمت نبشی</a>"
+        val priceRows = "<p>نبشی4فابریک (8/5کیلو) ۱۲۶۵۰۰</p>" +
+            "<p>نبشی4فابریک (9کیلو) ۱۲۵۵۰۰</p>"
+        val tools = sourceTools(mapOf("https://ahanmelal.com" to home, child to priceRows))
+        val outcome = Agent(tools).run("قیمت نبشی ۴ با وزن ۸/۵ کیلو از ahanmelal.com چنده؟")
+        assertFalse(outcome.answer.refused)
+        assertTrue(outcome.steps.any { it.tool == "sources.read" && it.args["url"] == child })
+        assertTrue(outcome.answer.bullets.joinToString().contains("۱۲۶٬۵۰۰"))
+        assertFalse(outcome.answer.bullets.joinToString().contains("۱۲۵٬۵۰۰"))
     }
 
     // ------------------------------------------------------------ the agent path
@@ -323,8 +337,8 @@ class UrlIngestTest {
 
     @Test
     fun theExactFourSourceScenarioOpensAllFourAndThenTheRelevantInternalPage() {
-        val angleUrl = "https://ahanmelal.com/steel-angle-price"
-        val home = "<html><body><a href=\"/steel-angle-price\">قیمت نبشی</a>" +
+        val angleUrl = "https://ahanmelal.com/steel-t-bars-studs-angles/steel-angle-price"
+        val home = "<html><body><a href=\"/steel-t-bars-studs-angles/steel-angle-price\">قیمت نبشی</a>" +
             "<p>نبشی 4 نستا: 5000 تومان کاهش</p></body></html>"
         val tools = sourceTools(mapOf(
             "https://ahanmelal.com" to home,

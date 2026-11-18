@@ -155,10 +155,13 @@ object UrlIngest {
     fun relevantLinks(html: String, baseUrl: String, keywords: List<String>, max: Int = 1): List<String> {
         if (keywords.isEmpty()) return emptyList()
         val host = Html.domainOf(baseUrl) ?: return emptyList()
+        // برچسبِ صفحهٔ دسته‌بندی معمولاً فقط نامِ هستهٔ کالا را دارد، نه قیدِ سؤال
+        // («قیمت نبشی»، نه «نبشی ۸/۵ کیلو»). قیدها هنگام سنجش *ردیف* اعمال می‌شوند.
+        val product = Text.normalize(keywords.first())
         return Html.links(html, baseUrl, 220)
             .asSequence()
             .filter { it.url != baseUrl && Html.domainOf(it.url) == host }
-            .filter { link -> keywords.all { Text.normalize(link.text).contains(it) } }
+            .filter { link -> Text.normalize(link.text).contains(product) }
             .sortedByDescending { if (Text.normalize(it.text).contains("قیمت")) 1 else 0 }
             .map { it.url }
             .distinct()
