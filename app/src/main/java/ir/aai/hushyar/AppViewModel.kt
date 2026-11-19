@@ -1281,7 +1281,7 @@ class AppViewModel(
                     .map { it.claim },
                 marketAttributes = pack?.attributes?.map { it.label }.orEmpty(),
                 gaps = known.isEmpty().let { if (it) listOf("چیزی ذخیره نشده") else emptyList() },
-                dialogue = prior.takeLast(2).map { "کاربر: ${it.question.take(65)}؛ پاسخ: ${it.answer?.text?.take(65).orEmpty()}" }
+                dialogue = prior.takeLast(4).map { "کاربر: ${it.question.take(70)}؛ پاسخ: ${it.answer?.text?.take(80).orEmpty()}" }
             )
             // کاربر خودش نشانی داده است: *پیش* از مدل و پویش/یادگیریِ خودکار همان صفحه‌ها را
             // باز می‌کنیم. مدل کوچک نه قیمت را استخراج می‌کند و نه حق ساختن عدد دارد.

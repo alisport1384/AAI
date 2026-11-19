@@ -52,7 +52,7 @@ for fn in ["fun answerable","fun coverage","fun gaps","fun isStale","fun stamp",
 # 5. IronKnowledge 18 families
 ik = read("app/src/main/java/ir/aai/hushyar/domain/IronKnowledge.kt")
 cat_block = ik[ik.find("val categories:"):ik.find("fun byName")]
-assert_true(cat_block.count("IronCategory(") == 18, f"IronKnowledge families 18 (got {cat_block.count('IronCategory(')})")
+assert_true(cat_block.count("IronCategory(") == 19, f"IronKnowledge families 19 inc سایر (got {cat_block.count('IronCategory(')})")
 assert_true('category = "iron"' in ik, "IronKnowledge category iron")
 assert_true("ttlDays = 180" in ik, "IronKnowledge ttl 180")
 assert_true("confidence = 0.92" in ik, "IronKnowledge confidence 0.92")
@@ -100,4 +100,4 @@ if errors:
     print(f"\nFAILED — {len(errors)} check(s) red.", file=sys.stderr)
     sys.exit(1)
 else:
-    print(f"\nGREEN — all checks pass ({len(uniq)} engines, 18 families, 15 fields, chunk 900/140).")
+    print(f"\nGREEN — all checks pass ({len(uniq)} engines, 19 families, 15 fields, chunk 900/140).")

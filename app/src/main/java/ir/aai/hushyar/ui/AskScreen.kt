@@ -94,15 +94,25 @@ fun AskScreen(vm: AppViewModel) {
                 TextButton(onClick = { confirmDelete = current.id }, enabled = !busy) { Text("حذف گفتگو", color = MaterialTheme.colorScheme.error) }
             }
         }
-        // ویندو کانتنت — زمینهٔ همین گفتگو
+        // ویندو کانتنت — زمینهٔ همین گفتگو (حافظه کوتاه‌مدت)
         Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
             Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("پنجرهٔ زمینه", style = MaterialTheme.typography.titleSmall)
-                Text(
-                    if (turns.isEmpty()) "هنوز پیامی نیست — هر پرسش جدید زمینه می‌سازد."
-                    else "آخرین پرسش: ${turns.last().question.take(120)} — ${turns.size} پیام در این گفتگو",
-                    style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Text("پنجرهٔ زمینه — ${turns.size} پیام در حافظه", style = MaterialTheme.typography.titleSmall)
+                if (turns.isEmpty()) {
+                    Text("هنوز پیامی نیست — هر پرسش جدید زمینه می‌سازد. تکمیل پرسش قبلی را همین‌جا بگو، زمینه می‌ماند.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                } else {
+                    // نمایش 2-3 نوبت آخر به عنوان زمینه فعال (Qwen هم همین را می‌بیند)
+                    turns.takeLast(3).forEach { turn ->
+                        val q = turn.question.take(70)
+                        val a = turn.answer?.text?.take(70) ?: (turn.failure ?: "در حال پاسخ…")
+                        val status = if (turn.answer?.refused == true) "— نیاز به تکمیل" else if (turn.answer != null) "✓" else "…"
+                        Text("• $q → ${a.take(45)} $status", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2)
+                        if (turn.resolvedQuestion.isNotBlank() && PersianNumber.normalize(turn.resolvedQuestion) != PersianNumber.normalize(turn.question)) {
+                            Text("  برداشت: ${turn.resolvedQuestion.take(80)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.secondary)
+                        }
+                    }
+                    if (turns.size > 3) Text("و ${PersianNumber.num((turns.size - 3).toLong())} پیام قبلی در حافظه", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
         }
         // حالت تفکر: سریع / عمیق — مستقیم روی researchDepth

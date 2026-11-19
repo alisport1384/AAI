@@ -218,7 +218,17 @@ object ConversationContext {
         ) {
             return ConversationResolution("قیمت $clean چقدر است؟", usedHistory = true, note = "موضوع را از پاسخ روشن‌کننده تکمیل کردم.")
         }
-        if (!refers && explicit.isNotEmpty()) return ConversationResolution(clean)
+        // تکمیل پرسش قبلی: کاربر فقط جزئیات اضافه می‌دهد ("ضخامت 4" / "برای تهران" / "10 شاخه" / "سایز 16")
+        // این پیام‌ها موضوع تازه نیستند — باید به موضوع قبلی بچسبند
+        val looksLikeSupplement = explicit.isNotEmpty() && !refers && clean.length <= 60 && (
+            Regex("(?i)(ضخامت|قطر|سایز|سایز|اندازه|ابعاد|طول|عرض|گرید|گرید|استاندارد|شاخه|عدد|تن|کیلو|برگ|رول|شاخه|برای|تهران|اصفهان|مشهد|تبریز|شیراز|ارسال|حمل|قیمتش|موجود)").containsMatchIn(normalized) ||
+            Regex("[0-9۰-۹]").containsMatchIn(clean) && clean.split(Regex("\\s+")).size <= 5
+        )
+        if (looksLikeSupplement && previousSubject.isNotEmpty()) {
+            val merged = "$previousSubject؛ $clean"
+            return ConversationResolution(merged, usedHistory = true, note = "جزئیات تکمیلی به موضوع قبلی «$previousSubject» افزوده شد؛ یک پرسش کامل ساخته شد.")
+        }
+        if (!refers && explicit.isNotEmpty() && !looksLikeSupplement) return ConversationResolution(clean)
         if (previousSubject.isEmpty() && explicit.isEmpty()) {
             return clarify(clean, "موضوع پیام قبلی مشخص نبود؛ لطفاً نام کالا یا موضوع را بگو.")
         }
