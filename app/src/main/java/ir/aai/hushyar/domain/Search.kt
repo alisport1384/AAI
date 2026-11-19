@@ -414,6 +414,7 @@ object SerpParser {
             SerpFormat.JSON -> when (engine.id) {
                 "mwmbl" -> JsonSerp.mwmbl(body, limit * 3)
                 "wikipedia-fa", "wikipedia-en" -> JsonSerp.wikipedia(body, limit * 3)
+                "zarebin" -> JsonSerp.zarebin(body, limit * 3)
                 else -> FeedParser.items(body, limit * 3) // generic: whatever URL-shaped fields exist
             }
         }
@@ -684,6 +685,41 @@ object JsonSerp {
         if (node == null) return ""
         node.asStringOrNull()?.let { return it.trim() }
         return node.asObjects().joinToString("") { it["value"]?.asStringOrNull().orEmpty() }.trim()
+    }
+
+    fun zarebin(body: String, limit: Int = 20): List<FeedParser.FeedItem> = runCatching {
+        val root = MiniJson.parse(body)
+        // zarebin.ir/gse/api/search/ → { results:[{web_link,title,description}], data, hits }
+        val candidates = root.fieldsOrEmpty["results"]?.asObjects()
+            ?: root.fieldsOrEmpty["data"]?.asObjects()
+            ?: root.fieldsOrEmpty["hits"]?.asObjects()
+            ?: root.asObjects()
+        // also try generic recursive collect if flat
+        if (candidates.isEmpty()) {
+            val flat = mutableListOf<FeedParser.FeedItem>()
+            collectGeneric(root, flat, limit)
+            return@runCatching flat
+        }
+        candidates.take(limit).mapNotNull { row ->
+            val url = row["web_link"]?.asStringOrNull()
+                ?: row["url"]?.asStringOrNull()
+                ?: row["link"]?.asStringOrNull()
+                ?: return@mapNotNull null
+            val title = row["title"]?.asStringOrNull()?.trim().orEmpty()
+            val desc = row["description"]?.asStringOrNull()
+                ?: row["snippet"]?.asStringOrNull()
+                ?: row["content"]?.asStringOrNull().orEmpty()
+            FeedParser.FeedItem(title.ifBlank { url }, url, desc)
+        }
+    }.getOrDefault(emptyList())
+
+    private fun collectGeneric(node: ir.aai.hushyar.core.Json, out: MutableList<FeedParser.FeedItem>, limit: Int) {
+        if (out.size >= limit) return
+        node.asObjects().forEach { row ->
+            val url = row["web_link"]?.asStringOrNull() ?: row["url"]?.asStringOrNull() ?: return@forEach
+            val title = row["title"]?.asStringOrNull().orEmpty()
+            out.add(FeedParser.FeedItem(title.ifBlank { url }, url, row["description"]?.asStringOrNull().orEmpty()))
+        }
     }
 
     private fun wikiUrl(row: Map<String, Json>): String = row["fullurl"]?.asStringOrNull()

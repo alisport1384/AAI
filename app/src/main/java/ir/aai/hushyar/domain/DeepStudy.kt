@@ -247,6 +247,7 @@ class DeepStudy(
                     pages++
                     val page = runCatching { fetch(hit.url, langTag) }.getOrNull() ?: continue
                     val layer = layerFor(hit, page, langTag)
+                    // 1) جمله‌های دقیقِ قبلی (برای نمایش/پرسش دقیق)
                     for (item in FactHarvester.harvest(clean, page, layer)) {
                         learned++
                         if (facts.containsKey(item.claim)) continue
@@ -256,6 +257,26 @@ class DeepStudy(
                         fresh++
                         if (result.decision == KnowledgeDecision.CONFLICT) {
                             failures["contradiction"] = "تناقض ثبت شد: ${item.claim.take(60)}"
+                        }
+                    }
+                    // 2) چانک‌های Qwen-ready (400-600 توکن، overlap، متادیتا) — بخش وحشتناک مهم
+                    // هر صفحه علاوه بر جملات، به قطعات قابل‌فهم برای Qwen هم خرد می‌شود تا مدل تمام اطلاعات را بخواند
+                    val ragItems = if (page.text.length >= 400) QwenRag.toKnowledgeItems(clean, page, layer, langTag, clock()) else emptyList()
+                    for (rag in ragItems) {
+                        if (facts.containsKey(rag.claim)) continue
+                        val result = runCatching { store(rag) }.getOrNull() ?: continue
+                        if (result.decision != KnowledgeDecision.IGNORE) {
+                            facts[rag.claim] = rag
+                            fresh++
+                        }
+                    }
+                    // اگر صفحه خیلی کوتاه بود اما جمله‌ای نداشت، حداقل یک چانک کامل
+                    if (page.text.length in 100..399 && learned == 0) {
+                        val single = QwenRag.singleChunk(clean, page, layer, langTag, clock())
+                        if (!facts.containsKey(single.claim)) {
+                            runCatching { store(single) }.getOrNull()?.let {
+                                if (it.decision != KnowledgeDecision.IGNORE) { facts[single.claim] = single; fresh++ }
+                            }
                         }
                     }
                 }

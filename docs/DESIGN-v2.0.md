@@ -680,7 +680,18 @@ Health/Backoff → RateLimiter(per-domain) → Robots → Cache(TTL/ETag) → Co
 
 ---
 
-## 24. ضمیمه
+## 24. V16 — IronPin و RAG Qwen (2026-11-19)
+
+**V16 سه درخواست 0.16 را تثبیت می‌کند (جزئیات کامل: `docs/V16-IRON.md`):**
+
+- **دیتابیس آفلاین:** ۱۸ خانواده IronPin → `IronKnowledge` (آفلاین، بچه‌فهم: معرفی+شکل+جنس+گرید+ساخت+ابعاد+واحد+معامله+کاربرد+مالیات ۱۴۰۴/۱۰٪+فرمول+ویژگی+هشدار) → `QwenRag` چانک ۴۵۰توکن/overlap → `knowledge` SQLite (ttl 180روز، category iron). سید خودکار در `AppViewModel.init`.
+- **تحقیق موضوعی Qwen-فهم:** تب دانش یک موضوع می‌گیرد → `AndroidTools.deepStudy` با **همهٔ موتورها (30 تا شامل گردو و ذره‌بین)** تا اشباع → `FactHarvester` (جملات دقیق) + `QwenRag` (چانک‌های rag قابل‌فهم برای Qwen) → `knowledgeStore` → `KnowledgeBank.answerable` فوری جواب می‌دهد و Qwen بازنویسی می‌کند. فرمت چانک: 900 حرف (~450tok) + metadata (url/domain/date/layer/tags).
+- **۳ تب:** پرسش (ویندو کانتنت + تفکر سریع/متعادل/عمیق) / دانش (IronPin + تحقیق + بک‌آپ) / تنظیمات (لاگ خاموش .md + مدل دانلود/بارگذاری/ذخیره/تست + موتورها + دیتابیس شخصی). فایل‌های حذف‌شده: `BackendScreen.kt` logic به `SettingsScreen` نقل شد؛ `Screens.kt` قدیمی به دو فایل جدید تقسیم شد.
+- **گردو/ذره‌بین:** `Engines.all` اکنون 30 موتور؛ friction 1؛ ذره‌بین JSON fallback دارد.
+
+---
+
+## 25. ضمیمه
 
 ### 24.1 پشته
 Kotlin/Compose/Hilt · llama.cpp (JNI) · Qwen3.5 (0.8B/2B/4B) · Qwen3-VL-2B / SmolVLM2-500M · EmbeddingGemma-300M (256d) · sqlite-vec + FTS5 · Room/SQLCipher · Tesseract4Android (`fas`,`eng`) · OkHttp + jsoup · QuickJS-Android · WorkManager · MediaProjection/Accessibility · Shizuku API (اختیاری) · Android Keystore.
