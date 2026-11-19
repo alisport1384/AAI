@@ -41,6 +41,9 @@ jobs:
           "$SDKMANAGER" --install "platforms;android-35" "build-tools;35.0.0" > /dev/null
           echo "sdk.dir=${ANDROID_HOME}" > local.properties
 
+      - name: Optional personal backend tests (stdlib + SQLite FTS5)
+        run: python3 -m unittest selfhost.test_hushyar_backend -v
+
       - name: Unit tests
         run: gradle --no-daemon --stacktrace testDebugUnitTest
 

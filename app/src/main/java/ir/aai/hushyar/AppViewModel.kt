@@ -26,6 +26,7 @@ import ir.aai.hushyar.data.ModelInstaller
 import ir.aai.hushyar.data.ModelTransfer
 import ir.aai.hushyar.data.ModelStore
 import ir.aai.hushyar.data.ProactiveRunner
+import ir.aai.hushyar.data.PersonalBackendClient
 import ir.aai.hushyar.data.Repos
 import ir.aai.hushyar.data.Store
 import ir.aai.hushyar.domain.Agent
@@ -33,6 +34,16 @@ import ir.aai.hushyar.domain.AgentStep
 import ir.aai.hushyar.domain.AnalysisResult
 import ir.aai.hushyar.domain.Analyzer
 import ir.aai.hushyar.domain.Answer
+import ir.aai.hushyar.domain.ChatThread
+import ir.aai.hushyar.domain.ChatTurn
+import ir.aai.hushyar.domain.ConversationContext
+import ir.aai.hushyar.domain.ConversationResolution
+import ir.aai.hushyar.domain.PurchaseComposer
+import ir.aai.hushyar.domain.PersonalBackendConfig
+import ir.aai.hushyar.domain.PersonalDocument
+import ir.aai.hushyar.domain.PrivateRoute
+import ir.aai.hushyar.domain.SafeCalculator
+import ir.aai.hushyar.domain.AgentOutcome
 import ir.aai.hushyar.domain.AttributeExtractor
 import ir.aai.hushyar.domain.Catalog
 import ir.aai.hushyar.domain.DeviceMemory
@@ -69,6 +80,8 @@ import ir.aai.hushyar.domain.PackBuildResult
 import ir.aai.hushyar.domain.PackCodec
 import ir.aai.hushyar.domain.ProductGroup
 import ir.aai.hushyar.domain.QaEngine
+import ir.aai.hushyar.domain.QuestionReader
+import ir.aai.hushyar.domain.AskType
 import ir.aai.hushyar.domain.SearchCore
 import ir.aai.hushyar.domain.EngineProbe
 import ir.aai.hushyar.domain.Engines
@@ -103,7 +116,22 @@ class AppViewModel(
         private set
     var lastAnswer by mutableStateOf<Answer?>(null)
         private set
-    var qaHistory by mutableStateOf<List<Pair<String, Answer>>>(emptyList())
+    var chatThreads by mutableStateOf<List<ChatThread>>(emptyList())
+        private set
+    var chatTurns by mutableStateOf<List<ChatTurn>>(emptyList())
+        private set
+    var selectedChatId by mutableStateOf<String?>(null)
+        private set
+    var chatBusy by mutableStateOf(true)
+        private set
+    /** Optional owner-run service; settings are private, token is Keystore-encrypted and not backed up. */
+    var personalBackendUrl by mutableStateOf(store.personalBackend.location().first)
+        private set
+    var personalBackendPin by mutableStateOf(store.personalBackend.location().second)
+        private set
+    var personalBackendConfigured by mutableStateOf(store.personalBackend.enabled())
+        private set
+    var personalDocuments by mutableStateOf<List<PersonalDocument>>(emptyList())
         private set
     var notice by mutableStateOf<String?>(null)
         private set
@@ -229,6 +257,7 @@ class AppViewModel(
     @Volatile private var sourceEpoch = 0
 
     private val search = SearchCore(HttpUrlTransport(), engines = Engines.all)
+    private val privateBackend = PersonalBackendClient()
     private val tools = AndroidTools(repos, store, search)
     private val proactive = ProactiveRunner(repos, tools)
 
@@ -236,6 +265,7 @@ class AppViewModel(
         refresh()
         refreshLocal()
         reloadBackend()
+        reloadChats()
     }
 
     /** Reads the backend page's settings (goal / environment / global prompt / sources / logging). */
@@ -258,6 +288,86 @@ class AppViewModel(
         directiveText = directive.trim()
         repos.audit("user", "backend.save", "goal", goal.trim().take(120))
         notice = "هدف، محیط و پرامپت کلی ذخیره شد."
+    }
+
+    /** Connecting is optional and explicit; neither chat nor documents are uploaded automatically. */
+    fun savePersonalBackend(url: String, pin: String, token: String): String? {
+        val config = try { PersonalBackendConfig.of(url, pin, token) }
+            catch (error: IllegalArgumentException) { return error.message ?: "نشانی یا کلید معتبر نیست" }
+        if (loading || chatBusy) return "برای پایان کار جاری صبر کن"
+        io({ store.personalBackend.save(config); Unit }) {
+            personalBackendUrl = config.baseUrl
+            personalBackendPin = config.pinSha256
+            personalBackendConfigured = true
+            personalDocuments = emptyList()
+            notice = "بک‌اند شخصی روی همین دستگاه ثبت شد؛ با «آزمون اتصال» گواهی و کلید را بررسی کن. گفتگوهای عادی همچنان روی دستگاه‌اند."
+        }
+        return null
+    }
+
+    fun disconnectPersonalBackend() {
+        if (loading || chatBusy) return
+        io({ store.personalBackend.clear(); Unit }) {
+            personalBackendUrl = ""
+            personalBackendPin = ""
+            personalBackendConfigured = false
+            personalDocuments = emptyList()
+            notice = "اتصال و کلید از گوشی حذف شدند. اسنادِ بارگذاری‌شده روی سرور شخصی پاک نشده‌اند."
+        }
+    }
+
+    fun testPersonalBackend() {
+        if (!personalBackendConfigured || loading || chatBusy) return
+        io({ privateBackend.health(store.personalBackend.read() ?: error("ابتدا بک‌اند شخصی را ثبت کن")) }) {
+            notice = it
+        }
+    }
+
+    /** Document requests and uploads are scoped to the *selected* conversation. */
+    fun refreshPersonalDocuments() {
+        val threadId = selectedChatId
+        if (!personalBackendConfigured || threadId == null) {
+            personalDocuments = emptyList()
+            return
+        }
+        if (loading || chatBusy) return
+        io({ privateBackend.list(store.personalBackend.read() ?: error("بک‌اند تنظیم نشده"), threadId) }) {
+            if (selectedChatId == threadId) personalDocuments = it
+        }
+    }
+
+    fun indexPersonalDocument(uri: android.net.Uri) {
+        val threadId = selectedChatId
+        if (threadId == null) { notice = "اول یک گفت‌وگو بساز؛ سند فقط به همان گفتگو تعلق می‌گیرد."; return }
+        if (!personalBackendConfigured) { notice = "اول بک‌اند شخصی را ثبت کن."; return }
+        if (loading || chatBusy) { notice = "تا پایان کار جاری صبر کن."; return }
+        io({
+            val selected = store.selectedText(uri)
+            selected.title to privateBackend.index(store.personalBackend.read() ?: error("بک‌اند تنظیم نشده"),
+                threadId, selected.title, selected.body, selected.kind)
+        }) { (name, result) ->
+            notice = if (result.duplicate) "«$name» قبلاً در همین گفتگو نمایه شده بود."
+                else "«$name» در ${Text.num(result.chunks.toLong())} بخش روی سرور شخصی نمایه شد."
+            refreshPersonalDocuments()
+        }
+    }
+
+    fun removePersonalDocument(id: String) {
+        val threadId = selectedChatId ?: return
+        if (!personalBackendConfigured || loading || chatBusy) return
+        io({ privateBackend.delete(store.personalBackend.read() ?: error("بک‌اند تنظیم نشده"), threadId, id) }) { deleted ->
+            notice = if (deleted) "سند از بک‌اند شخصی حذف شد." else "سند در این گفتگو پیدا نشد."
+            refreshPersonalDocuments()
+        }
+    }
+
+    fun purgePersonalThread() {
+        val threadId = selectedChatId ?: return
+        if (!personalBackendConfigured || loading || chatBusy) return
+        io({ privateBackend.purgeThread(store.personalBackend.read() ?: error("بک‌اند تنظیم نشده"), threadId) }) { count ->
+            personalDocuments = emptyList()
+            notice = "${Text.num(count.toLong())} سند همین گفتگو از سرور شخصی حذف شد؛ گفتگوهای دیگر دست‌نخورده‌اند."
+        }
     }
 
     /** The one string the local model sees before its own rules (v0.12). */
@@ -864,14 +974,183 @@ class AppViewModel(
         analysis = null
     }
 
+    private data class ChatSnapshot(
+        val threads: List<ChatThread>, val selected: String?, val turns: List<ChatTurn>
+    )
+
+    private fun chatSnapshot(preferredId: String? = null): ChatSnapshot {
+        val threads = repos.chatThreads()
+        val selected = preferredId?.takeIf { id -> threads.any { it.id == id } }
+            ?: repos.chatSelectedId()?.takeIf { id -> threads.any { it.id == id } }
+            ?: threads.firstOrNull()?.id
+        if (selected != null && selected != repos.chatSelectedId()) repos.chatSelect(selected)
+        return ChatSnapshot(threads, selected, selected?.let(repos::chatTurns).orEmpty())
+    }
+
+    private fun showChat(snapshot: ChatSnapshot, keepDiagnostics: Boolean = false) {
+        if (selectedChatId != snapshot.selected) personalDocuments = emptyList()
+        chatThreads = snapshot.threads
+        selectedChatId = snapshot.selected
+        chatTurns = snapshot.turns
+        lastAnswer = snapshot.turns.lastOrNull { it.answer != null }?.answer
+        if (!keepDiagnostics) {
+            steps = emptyList()
+            lastDecision = null
+        }
+    }
+
+    /** Reopens the last selected conversation on startup and after a restore. */
+    fun reloadChats() {
+        chatBusy = true
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) { runCatching { chatSnapshot() } }
+            result.onSuccess { showChat(it) }.onFailure { notice = it.message ?: "خواندن گفت‌وگوها ناموفق بود" }
+            chatBusy = false
+        }
+    }
+
+    private fun manageChat(successNotice: String? = null, action: () -> Unit) {
+        if (chatBusy || loading) return
+        chatBusy = true
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) { runCatching { action(); chatSnapshot() } }
+            result.onSuccess {
+                showChat(it)
+                if (successNotice != null) notice = successNotice
+            }.onFailure { notice = it.message ?: "تغییر گفت‌وگو ناموفق بود" }
+            chatBusy = false
+        }
+    }
+
+    fun newChat() = manageChat { repos.chatCreate() }
+
+    fun selectChat(id: String) {
+        if (id == selectedChatId || chatThreads.none { it.id == id }) return
+        manageChat { repos.chatSelect(id) }
+    }
+
+    fun renameChat(id: String, title: String) = manageChat("عنوان گفت‌وگو تغییر کرد.") {
+        repos.chatRename(id, title)
+    }
+
+    fun deleteChat(id: String) = manageChat("گفت‌وگو و پیام‌هایش از این گوشی پاک شدند.") {
+        repos.chatDelete(id)
+    }
+
+    private data class ChatStart(val threadId: String, val turn: ChatTurn, val history: List<ChatTurn>, val snapshot: ChatSnapshot)
+
+    /** The user turn is committed before any model or web work; each thread has its own context. */
+    fun ask(question: String): Boolean {
+        val text = question.trim()
+        if (text.isEmpty() || chatBusy || loading) return false
+        chatBusy = true
+        loading = true
+        steps = emptyList()
+        lastDecision = null
+        val chosenId = selectedChatId
+        viewModelScope.launch {
+            val started = withContext(Dispatchers.IO) { runCatching {
+                val threadId = chosenId?.takeIf { id -> repos.chatThreads().any { it.id == id } }
+                    ?: repos.chatCreate().id
+                // Even a failed prior user message is still the previous question
+                // for explicit recall. Planning uses answered turns only.
+                val history = repos.chatTurns(threadId)
+                val turn = repos.chatAppend(threadId, text)
+                ChatStart(threadId, turn, history, chatSnapshot(threadId))
+            } }
+            if (started.isFailure) {
+                notice = started.exceptionOrNull()?.message ?: "ذخیرهٔ پیام ناموفق بود"
+                loading = false
+                chatBusy = false
+                return@launch
+            }
+            val start = started.getOrThrow()
+            showChat(start.snapshot)
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val generator = if (localModel.usingForAnswers && engine.ready) engine else null
+                    // Explicit tools must not be rewritten into another product or sent to a model.
+                    val resolution = if (PrivateRoute.calculate(text) != null || PrivateRoute.documents(text) != null)
+                        ConversationResolution(text)
+                    else ConversationContext.resolve(text, start.threadId, start.history, generator, localModel.spec)
+                    val purchase = if (resolution.directAnswer == null &&
+                        PrivateRoute.calculate(text) == null && PrivateRoute.documents(text) == null)
+                        PurchaseComposer.plan(text, resolution.effectiveQuestion, start.threadId,
+                            start.history, resolution.usedHistory) else null
+                    val outcome = resolution.directAnswer?.let { AgentOutcome(it, emptyList(), emptyList()) }
+                        ?: if (purchase != null) {
+                            // A user-supplied per-unit rate is a hypothetical worksheet, not a
+                            // reason to fetch and silently replace it with a market quote.
+                            val base = if (purchase.parts.userRate != null) AgentOutcome(
+                                Answer("purchase.user-input", "محاسبه از نرخ اعلامی شما؛ بدون جستجوی قیمت"),
+                                emptyList(), emptyList()
+                            ) else answerQuestion(purchase.priceQuestion, start.history,
+                                resolution.forceFresh, start.threadId)
+                            val rate = if (resolution.forceFresh) null else PurchaseComposer.storedRate(
+                                purchase.priceQuestion, repos.knowledgeAll(800), System.currentTimeMillis())
+                            val composed = PurchaseComposer.answer(purchase, rate)
+                            base.copy(answer = composed.copy(trace = composed.trace + base.answer.trace.take(4)),
+                                steps = base.steps + AgentStep(base.steps.size + 1,
+                                    "جمع شرطیِ قیمت، مالیات و حمل از داده‌های نوع‌دار و فرض‌های صریح",
+                                    "purchase.compose", emptyMap(),
+                                    if (composed.refused) "مولفه‌ها ناقص‌اند" else "همهٔ مولفه‌های لازم مشخص‌اند"))
+                        } else answerQuestion(resolution.effectiveQuestion, start.history,
+                            resolution.forceFresh, start.threadId)
+                    val answer = if (resolution.usedHistory) outcome.answer.copy(
+                        trace = listOf(resolution.note) + outcome.answer.trace
+                    ) else outcome.answer
+                    repos.chatComplete(start.turn.id, resolution.effectiveQuestion, answer)
+                    outcome.copy(answer = answer) to resolution
+                }.onFailure { error ->
+                    runCatching { repos.chatFail(start.turn.id, error.message ?: "پاسخ به پایان نرسید؛ دوباره تلاش کنید.") }
+                }
+            }
+            // The saved answer (or a failed user turn) is loaded from the same database that survives
+            // an APK update. Never show an unsaved answer as though it were durable.
+            val saved = withContext(Dispatchers.IO) { runCatching { chatSnapshot(start.threadId) } }
+            saved.onSuccess { showChat(it, keepDiagnostics = result.isSuccess) }
+                .onFailure { notice = "خواندن پیام‌های ذخیره‌شده ناموفق بود: ${it.message}" }
+            loading = false
+            chatBusy = false
+            result.onSuccess { (outcome, _) ->
+                steps = outcome.steps
+                growth = Growth.report(repos.knowledgeAll(800), tools.goalsNow(), System.currentTimeMillis())
+                refreshSecondary()
+            }.onFailure { notice = "پاسخ به پایان نرسید؛ پیام روی گوشی ماند: ${it.message ?: "خطای نامشخص"}" }
+        }
+        return true
+    }
+
     /**
      * The agent loop: data commands, local catalog, memory and web research, then learning.
-     * A market pack is helpful but no longer required — memory, backup and web work without one.
+     * It receives the *resolved* question, before decision and evidence gathering.
      */
-    fun ask(question: String) {
-        if (question.isBlank()) return
-        steps = emptyList()
-        io({
+    private fun answerQuestion(question: String, prior: List<ChatTurn>, forceFresh: Boolean, threadId: String): AgentOutcome {
+            PrivateRoute.calculate(question)?.let { expression ->
+                val answer = SafeCalculator.answer(expression)
+                return AgentOutcome(answer, listOf(AgentStep(1, "محاسبهٔ محدود روی همین دستگاه", "calculator",
+                    emptyMap(), if (answer.refused) "عبارت رد شد" else "فقط عبارت حسابی اجرا شد")), emptyList())
+            }
+            PrivateRoute.documents(question)?.let { query ->
+                val answer = when {
+                    query.isBlank() -> Answer("personal.docs", "پس از «از اسنادم:» پرسش را بنویس.",
+                        refused = true, missing = listOf("پرسش دربارهٔ سند"))
+                    !personalBackendConfigured -> Answer("personal.docs",
+                        "بک‌اند شخصی تنظیم نشده است؛ گفتگوهای معمولی همچنان روی همین گوشی کار می‌کنند.",
+                        refused = true, missing = listOf("اتصال اختیاری به بک‌اند شخصی"))
+                    else -> runCatching {
+                        val config = store.personalBackend.read() ?: error("اتصال شخصی خاموش است")
+                        privateBackend.ask(config, threadId, query)
+                    }.getOrElse { Answer("personal.docs",
+                        "سرویس اسناد شخصی در دسترس نیست یا گواهی/کلید آن معتبر نیست؛ " +
+                            "از پاسخ‌های قدیمی یا مدلِ بدون شاهد به‌جای سند استفاده نکردم.",
+                        refused = true, missing = listOf("اتصال و شاهد در اسناد شخصی"),
+                        trace = listOf("درخواست مستند شکست خورد؛ پاسخ حدسی یا کش‌شده نمایش داده نشد.")) }
+                }
+                return AgentOutcome(answer, listOf(AgentStep(1, "جستجو در اسناد همین گفتگو روی بک‌اند شخصی", "personal.docs",
+                    emptyMap(), if (answer.refused) "شاهد کافی نیست یا سرور در دسترس نیست" else "نقل‌قول‌ها با شناسهٔ سند ارائه شدند")),
+                    emptyList())
+            }
             // v0.11: «من فروشگاه تی‌شرت و شلوار هستم» یک پرسش نیست، یک معرفی است. برنامه از آن
             // بستهٔ دانش می‌سازد و ذخیره می‌کند؛ از آن به بعد همان مسیر بی‌حوزه جواب می‌دهد.
             val setupText = ir.aai.hushyar.domain.DomainPacks.DomainSetup.describe(question)
@@ -880,7 +1159,7 @@ class AppViewModel(
                 val built = ir.aai.hushyar.domain.DomainPacks.fromDescription(setupText)
                 val entities = built?.entities?.joinToString("، ") { it.label }.orEmpty()
                 val attrs = built?.entities?.firstOrNull()?.attributes?.joinToString("، ") { it.label }.orEmpty()
-                return@io ir.aai.hushyar.domain.AgentOutcome(
+                return ir.aai.hushyar.domain.AgentOutcome(
                     answer = ir.aai.hushyar.domain.Answer(
                         intent = "domain.setup",
                         text = "بازار تو ثبت شد: ${built?.name ?: setupText.take(40)}",
@@ -923,13 +1202,16 @@ class AppViewModel(
                 topFacts = repos.knowledgeAnswerable(question, now = System.currentTimeMillis(), limit = 3)
                     .map { it.claim },
                 marketAttributes = pack?.attributes?.map { it.label }.orEmpty(),
-                gaps = known.isEmpty().let { if (it) listOf("چیزی ذخیره نشده") else emptyList() }
+                gaps = known.isEmpty().let { if (it) listOf("چیزی ذخیره نشده") else emptyList() },
+                dialogue = prior.takeLast(2).map { "کاربر: ${it.question.take(65)}؛ پاسخ: ${it.answer?.text?.take(65).orEmpty()}" }
             )
             // کاربر خودش نشانی داده است: *پیش* از مدل و پویش/یادگیریِ خودکار همان صفحه‌ها را
             // باز می‌کنیم. مدل کوچک نه قیمت را استخراج می‌کند و نه حق ساختن عدد دارد.
             val handedSources = UrlIngest.hasLinks(question) && UrlIngest.asksPrice(question)
-            val decision = if (handedSources) {
+            val planned = if (handedSources) {
                 AgentDecision(LocalAction.RESEARCH, question, "اول نشانی‌های داخل پرسش را باز کن", false)
+            } else if (forceFresh) {
+                AgentDecision(LocalAction.RESEARCH, question, "درخواست بررسی تازه؛ پاسخ ذخیره‌شده کافی نیست", false)
             } else LocalPlanner.decide(
                 request = question,
                 lang = langForPlan,
@@ -937,35 +1219,45 @@ class AppViewModel(
                 generator = if (localModel.usingForAnswers && engine.ready) engine else null,
                 spec = localModel.spec
             )
+            // A small model can mistakenly call a price/number question "chat". Never let a
+            // knowledge request take the ungrounded greeting shortcut.
+            val knowledgeQuestion = QuestionReader.read(question).ask in setOf(
+                AskType.PRICE, AskType.AMOUNT, AskType.DATE, AskType.COMPARISON
+            ) || UrlIngest.hasLinks(question)
+            val decision = if (planned.action == LocalAction.GREET && knowledgeQuestion)
+                AgentDecision(LocalAction.RESEARCH, question, "پرسش دانشی به شاهد نیاز دارد؛ گفت‌وگوی بی‌منبع کافی نیست", false)
+            else planned
             lastDecision = decision
             repos.log("brain", "local", "${decision.action.name} → ${decision.reason}", decision.query.take(120))
 
-            if (decision.action == LocalAction.GREET && engine.ready) {
-                // Pure talk. No search, no evidence, and the answer card says so.
-                val chat = runCatching { LocalChatter(engine, localModel.spec).reply(question, langForPlan) }.getOrNull()
-                val text = chat?.text?.trim()
-                if (!text.isNullOrBlank()) {
-                    return@io ir.aai.hushyar.domain.AgentOutcome(
-                        answer = ir.aai.hushyar.domain.Answer(
-                            intent = "chat/local",
-                            text = text,
-                            lang = langForPlan,
-                            confidence = 0.2,
-                            trace = listOf("پاسخ فقط از مدل محلی؛ شاهد وب ندارد"),
-                            refused = false
-                        ),
-                        steps = listOf(
-                            ir.aai.hushyar.domain.AgentStep(
-                                1,
-                                "هستهٔ محلی: گفت‌وگوی ساده — ${decision.reason}",
-                                if (decision.fromModel) "brain/local-model" else "brain/rules",
-                                mapOf("action" to decision.action.name),
-                                "بدون جستجو، بدون شاهد"
-                            )
-                        ),
-                        actions = emptyList()
-                    )
+            if (decision.action == LocalAction.GREET) {
+                // Pure talk only. With no opted-in model (or a generation failure), use a clearly
+                // labelled local greeting instead of sending a greeting to web search.
+                val chat = if (localModel.usingForAnswers && engine.ready)
+                    runCatching { LocalChatter(engine, localModel.spec).reply(question, langForPlan, prior) }.getOrNull()
+                else null
+                val text = chat?.text?.trim()?.takeIf { it.isNotBlank() }
+                val template = when {
+                    Text.normalize(question).contains("ممنون") || Text.normalize(question).contains("مرسی") ->
+                        "خواهش می‌کنم. اگر سؤال بعدی به همین موضوع مربوط است، ادامه بده."
+                    Text.normalize(question).contains("خداحافظ") -> "خدانگهدار! این گفت‌وگو روی گوشی‌ات می‌ماند."
+                    else -> "سلام! سؤالت را بپرس؛ برای عدد و قیمت فقط با شاهد پاسخ می‌دهم."
                 }
+                return AgentOutcome(
+                    answer = Answer(
+                        intent = if (text != null) "chat/local" else "chat/template",
+                        text = text ?: template,
+                        lang = "fa",
+                        confidence = 0.2,
+                        trace = listOf(if (text != null) "گفت‌وگوی مدل محلی؛ شاهد وب ندارد"
+                            else "پاسخ قالبی محلی؛ مدل فعال نبود یا پاسخی نداد؛ شاهد وب ندارد")
+                    ),
+                    steps = listOf(ir.aai.hushyar.domain.AgentStep(
+                        1, "گفت‌وگوی ساده — ${decision.reason}",
+                        if (text != null) "brain/local-model" else "brain/rules",
+                        mapOf("action" to decision.action.name), "بدون جستجو، بدون شاهد"
+                    )), actions = emptyList()
+                )
             }
             when (decision.action) {
                 LocalAction.STUDY -> {
@@ -980,7 +1272,7 @@ class AppViewModel(
             // v0.8: a knowledge request ("یاد بگیر…", "همه‌چیز درباره…") runs the full study loop
             // first — every engine, layered — so the answer below is built from fresh material
             // that also stays for later questions.
-            if (!handedSources && StudyTrigger.wantsStudy(question)) {
+            if (!handedSources && !forceFresh && StudyTrigger.wantsStudy(question)) {
                 val topic = StudyTrigger.topicOf(question)
                 val langTag = if (topic.any { it in '\u0600'..'\u06FF' }) "fa" else "en"
                 val brain = if (localModel.usingForAnswers && engine.ready) LocalBrain(engine, localModel.spec) else null
@@ -1012,7 +1304,7 @@ class AppViewModel(
             // "Answer from what we already know" means exactly that: the web is not touched. If the
             // stored knowledge cannot carry it, the agent refuses honestly and we then allow one
             // web pass — recorded, not hidden.
-            var outcome = agent.run(question, allowWeb = decision.action != LocalAction.ANSWER_MEMORY)
+            var outcome = agent.run(question, allowWeb = decision.action != LocalAction.ANSWER_MEMORY, forceFresh = forceFresh)
             var corrected = false
             if (outcome.answer.refused && decision.action == LocalAction.ANSWER_MEMORY) {
                 outcome = agent.run(question, allowWeb = true)
@@ -1042,14 +1334,7 @@ class AppViewModel(
             if (!outcome.answer.refused && !isMaterialAnswer && !handedSources) {
                 runCatching { proactive.afterAnswer(question) }
             }
-            outcome
-        }) { outcome ->
-            lastAnswer = outcome.answer
-            steps = outcome.steps
-            growth = Growth.report(repos.knowledgeAll(800), tools.goalsNow(), System.currentTimeMillis())
-            qaHistory = (listOf(question to outcome.answer) + qaHistory).take(20)
-            refreshSecondary()
-        }
+            return outcome
     }
 
     private fun refreshSecondary() {
@@ -1134,7 +1419,7 @@ class AppViewModel(
     fun testEngines() {
         if (probing) return
         probing = true
-        val query = goals.firstOrNull() ?: qaHistory.firstOrNull()?.first ?: "قیمت گوشی"
+        val query = goals.firstOrNull() ?: chatTurns.lastOrNull { it.answer != null }?.question ?: "قیمت گوشی"
         io({ tools.probeEngines(query) }) { result ->
             probing = false
             probes = result.map { Triple(it.id, it.ok, it.hits) }
@@ -1261,9 +1546,23 @@ class AppViewModel(
 
     fun backup() {
         io({ BackupService.createDetailed(repos, store, BuildConfig.VERSION_NAME) }) { result ->
-            notice = "بک‌آپ ساخته شد: ${result.file.name}\n${BackupService.summary(result.info)}"
+            notice = "بک‌آپ ساخته شد: ${result.file.name}\n${BackupService.summary(result.info)}\nبرای نگه‌داشتن بیرون از اپ، دکمهٔ «ذخیره بیرون از اپ» را بزن."
             lastMarkdown = result.markdown
             refreshSecondary()
+        }
+    }
+
+    /** A private backup dies with an uninstall. Let the user save the ZIP outside the app. */
+    fun exportBackupToUri(name: String, uri: android.net.Uri) {
+        io({
+            val file = store.backupDir.listFiles()?.firstOrNull { it.name == name && it.extension == "zip" }
+                ?: throw IllegalArgumentException("فایل پشتیبان پیدا نشد")
+            val output = store.openOutput(uri) ?: throw IllegalStateException("محل ذخیره باز نشد")
+            val copied = output.use { stream -> file.inputStream().use { it.copyTo(stream) } }
+            require(copied == file.length()) { "کپی پشتیبان ناقص بود" }
+            copied
+        }) { copied ->
+            notice = "پشتیبان بیرون از اپ ذخیره شد (${ir.aai.hushyar.core.Text.num(copied)} بایت). پیش از حذف اپ سالم‌بودن فایل را بررسی کن."
         }
     }
 
@@ -1289,8 +1588,10 @@ class AppViewModel(
     }
 
     fun restore(json: String) {
+        if (chatBusy) { notice = "تا پایان پاسخ جاری برای بازیابی صبر کن."; return }
         io({ BackupService.restore(repos, json) }) { info ->
             notice = "بازیابی انجام شد.\n${BackupService.summary(info)}"
+            reloadChats()
             refreshSecondary()
             refresh()
         }
@@ -1302,20 +1603,24 @@ class AppViewModel(
     }
 
     fun restoreBackupFile(name: String) {
+        if (chatBusy) { notice = "تا پایان پاسخ جاری برای بازیابی صبر کن."; return }
         io({
             val file = store.backupDir.listFiles()?.firstOrNull { it.name == name }
                 ?: throw IllegalArgumentException("فایل پیدا نشد: $name")
             BackupService.restoreFromFile(repos, store, file)
         }) { info ->
             notice = "بازیابی از $name انجام شد.\n${BackupService.summary(info)}"
+            reloadChats()
             refreshSecondary()
             refresh()
         }
     }
 
     fun restoreFromUri(uri: android.net.Uri) {
+        if (chatBusy) { notice = "تا پایان پاسخ جاری برای بازیابی صبر کن."; return }
         io({ BackupService.restoreFromUri(repos, store, uri) }) { info ->
             notice = "بازیابی از فایل انجام شد.\n${BackupService.summary(info)}"
+            reloadChats()
             refreshSecondary()
             refresh()
         }
@@ -1342,16 +1647,25 @@ class AppViewModel(
     }
 
     fun resetAll() {
-        io({ repos.resetEverything(); Unit }) {
+        if (chatBusy || loading) { notice = "تا پایان پاسخ جاری برای پاک‌سازی صبر کن."; return }
+        io({ repos.resetEverything(); store.personalBackend.clear(); Unit }) {
+            personalBackendUrl = ""
+            personalBackendPin = ""
+            personalBackendConfigured = false
+            personalDocuments = emptyList()
             pack = null
             manifest = null
             listings = emptyList()
             products = emptyList()
             answers = emptyMap()
+            chatThreads = emptyList()
+            chatTurns = emptyList()
+            selectedChatId = null
             lastAnswer = null
-            qaHistory = emptyList()
+            lastDecision = null
+            steps = emptyList()
             analysis = null
-            notice = "همه‌چیز پاک شد."
+            notice = "داده‌های روی این گوشی و اتصال بک‌اند پاک شد؛ اسنادِ سرور شخصی جدا هستند و خودکار حذف نشده‌اند."
         }
     }
 

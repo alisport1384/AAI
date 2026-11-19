@@ -57,7 +57,9 @@ data class AgentBriefing(
     val topFacts: List<String> = emptyList(),
     /** The market pack's attributes — how the app sees its own market («خودش را در بازار می‌بیند»). */
     val marketAttributes: List<String> = emptyList(),
-    val gaps: List<String> = emptyList()
+    val gaps: List<String> = emptyList(),
+    /** Recent turns of this thread only; context for choosing an action, never price evidence. */
+    val dialogue: List<String> = emptyList()
 ) {
     /** One compact paragraph. Every line the model sees is stated in the same order every time. */
     fun prompt(): String {
@@ -76,6 +78,7 @@ data class AgentBriefing(
                 .append(marketAttributes.take(5).joinToString("، ").take(80)).append('\n')
             topFacts.take(3).forEach { sb.append("دانسته: ").append(it.take(60)).append('\n') }
             if (gaps.isNotEmpty()) sb.append("نمی‌دانیم: ").append(gaps.take(2).joinToString("، ").take(80)).append('\n')
+            dialogue.takeLast(2).forEach { sb.append("گفت‌وگوی پیشین (نه شاهد): ").append(it.take(140)).append('\n') }
             sb.append("پرسش: «").append(request.take(120)).append("»\n")
             sb.append("کارها: دانش، جستجو، یادگیری، گفتگو\nکلمه:")
         } else {
@@ -91,6 +94,7 @@ data class AgentBriefing(
                 .append(marketAttributes.take(5).joinToString(", ").take(80)).append('\n')
             topFacts.take(3).forEach { sb.append("Known: ").append(it.take(60)).append('\n') }
             if (gaps.isNotEmpty()) sb.append("Unknown: ").append(gaps.take(2).joinToString(", ").take(80)).append('\n')
+            dialogue.takeLast(2).forEach { sb.append("Previous turn (not evidence): ").append(it.take(140)).append('\n') }
             sb.append("Question: \"").append(request.take(120)).append("\"\n")
             sb.append("Actions: memory, search, learn, chat\nWord:")
         }

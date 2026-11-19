@@ -22,6 +22,9 @@ import ir.aai.hushyar.domain.Listing
 import ir.aai.hushyar.domain.MarketPack
 import ir.aai.hushyar.domain.MemoryItem
 import ir.aai.hushyar.domain.Backup
+import ir.aai.hushyar.domain.ChatAnswerCodec
+import ir.aai.hushyar.domain.ChatThread
+import ir.aai.hushyar.domain.ChatTurn
 import ir.aai.hushyar.domain.KnowledgeBank
 import ir.aai.hushyar.domain.KnowledgeDecision
 import ir.aai.hushyar.domain.KnowledgeItem
@@ -30,6 +33,8 @@ import ir.aai.hushyar.domain.ResearchBudget
 import ir.aai.hushyar.domain.LogEvent
 import ir.aai.hushyar.domain.MemoryBank
 import ir.aai.hushyar.domain.PackCodec
+import ir.aai.hushyar.domain.Answer
+import ir.aai.hushyar.domain.UrlIngest
 
 /**
  * Single-file SQLite schema (DESIGN-v2.0 §7, subset required by v0.1).
@@ -83,6 +88,9 @@ class Db(context: Context) : SQLiteOpenHelper(context, NAME, null, VERSION) {
         db.execSQL(PLAYBOOK_TABLE)
         db.execSQL(DOMAIN_TABLE)
         db.execSQL(PLAN_TABLE)
+        db.execSQL(CHAT_THREAD_TABLE)
+        db.execSQL(CHAT_TURN_TABLE)
+        db.execSQL(CHAT_TURN_INDEX)
         db.execSQL("CREATE TABLE preference(k TEXT PRIMARY KEY, v TEXT NOT NULL)")
         db.execSQL(
             """CREATE TABLE audit(
@@ -120,11 +128,36 @@ class Db(context: Context) : SQLiteOpenHelper(context, NAME, null, VERSION) {
             db.execSQL(DOMAIN_TABLE)
             db.execSQL(PLAN_TABLE)
         }
+        // v0.14: separate, durable conversations. No existing table is dropped or rewritten.
+        if (oldVersion < 6) {
+            db.execSQL(CHAT_THREAD_TABLE)
+            db.execSQL(CHAT_TURN_TABLE)
+            db.execSQL(CHAT_TURN_INDEX)
+        }
     }
 
     companion object {
         private const val NAME = "hushyar.db"
-        private const val VERSION = 5
+        private const val VERSION = 6
+
+        private const val CHAT_THREAD_TABLE = """CREATE TABLE chat_thread(
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )"""
+        private const val CHAT_TURN_TABLE = """CREATE TABLE chat_turn(
+                seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                id TEXT NOT NULL UNIQUE,
+                thread_id TEXT NOT NULL REFERENCES chat_thread(id) ON DELETE CASCADE,
+                question TEXT NOT NULL,
+                resolved_question TEXT NOT NULL DEFAULT '',
+                answer_json TEXT,
+                created_at INTEGER NOT NULL,
+                finished_at INTEGER NOT NULL DEFAULT 0,
+                failure TEXT
+            )"""
+        private const val CHAT_TURN_INDEX = "CREATE INDEX idx_chat_turn_thread_seq ON chat_turn(thread_id, seq)"
 
         private const val MEMORY_TABLE = """CREATE TABLE memory(
                 id TEXT PRIMARY KEY,
@@ -921,6 +954,158 @@ class Repos(private val db: Db) {
         }
     }
 
+    // ---------- local-only conversations (v0.14) ----------
+
+    private val activeChatKey = "chat.active_id"
+
+    fun chatSelectedId(): String? = preference(activeChatKey)
+
+    fun chatThreads(): List<ChatThread> =
+        db.readableDatabase.query("chat_thread", null, null, null, null, null,
+            "updated_at DESC, created_at DESC, id DESC").use { c ->
+            buildList {
+                while (c.moveToNext()) add(ChatThread(
+                    c.getString(c.getColumnIndexOrThrow("id")),
+                    c.getString(c.getColumnIndexOrThrow("title")),
+                    c.getLong(c.getColumnIndexOrThrow("created_at")),
+                    c.getLong(c.getColumnIndexOrThrow("updated_at"))
+                ))
+            }
+        }
+
+    fun chatSelect(id: String) {
+        require(chatThreads().any { it.id == id }) { "گفت‌وگو پیدا نشد" }
+        putPreference(activeChatKey, id)
+    }
+
+    fun chatCreate(): ChatThread {
+        val time = now
+        val thread = ChatThread(Ids.new("chat"), "گفت‌وگوی تازه", time, time)
+        val w = db.writableDatabase
+        w.beginTransaction()
+        try {
+            w.insertOrThrow("chat_thread", null, chatThreadValues(thread))
+            w.insertWithOnConflict("preference", null, ContentValues().apply {
+                put("k", activeChatKey); put("v", thread.id)
+            }, SQLiteDatabase.CONFLICT_REPLACE)
+            w.setTransactionSuccessful()
+        } finally { w.endTransaction() }
+        return thread
+    }
+
+    fun chatRename(id: String, title: String) {
+        val clean = title.trim().replace(Regex("\\s+"), " ").take(60)
+        require(clean.isNotEmpty()) { "عنوان گفت‌وگو خالی است" }
+        require(db.writableDatabase.update("chat_thread", ContentValues().apply { put("title", clean) },
+            "id = ?", arrayOf(id)) == 1) { "گفت‌وگو پیدا نشد" }
+    }
+
+    /** Delete one thread and its turns atomically; the foreign key does the cascading deletion. */
+    fun chatDelete(id: String): String? {
+        val w = db.writableDatabase
+        w.beginTransaction()
+        try {
+            require(w.delete("chat_thread", "id = ?", arrayOf(id)) == 1) { "گفت‌وگو پیدا نشد" }
+            val next = w.query("chat_thread", arrayOf("id"), null, null, null, null,
+                "updated_at DESC, created_at DESC, id DESC", "1").use { c ->
+                if (c.moveToFirst()) c.getString(0) else null
+            }
+            if (next == null) w.delete("preference", "k = ?", arrayOf(activeChatKey))
+            else w.insertWithOnConflict("preference", null, ContentValues().apply {
+                put("k", activeChatKey); put("v", next)
+            }, SQLiteDatabase.CONFLICT_REPLACE)
+            w.setTransactionSuccessful()
+            return next
+        } finally { w.endTransaction() }
+    }
+
+    /** Save the user's message *before* research/model generation, so process death does not lose it. */
+    fun chatAppend(threadId: String, question: String): ChatTurn {
+        require(question.isNotBlank()) { "پیام خالی است" }
+        val time = now
+        val turn = ChatTurn(Ids.new("turn"), threadId, question.trim(), createdAt = time)
+        val w = db.writableDatabase
+        w.beginTransaction()
+        try {
+            val wasEmpty = w.query("chat_turn", arrayOf("seq"), "thread_id = ?", arrayOf(threadId),
+                null, null, null, "1").use { !it.moveToFirst() }
+            val autoTitle = wasEmpty && w.query("chat_thread", arrayOf("title"), "id = ?",
+                arrayOf(threadId), null, null, null).use { c ->
+                c.moveToFirst() && c.getString(0) == "گفت‌وگوی تازه"
+            }
+            w.insertOrThrow("chat_turn", null, chatTurnValues(turn))
+            val values = ContentValues().apply {
+                put("updated_at", time)
+                if (autoTitle) put("title", chatTitle(question))
+            }
+            w.update("chat_thread", values, "id = ?", arrayOf(threadId))
+            w.setTransactionSuccessful()
+        } finally { w.endTransaction() }
+        return turn
+    }
+
+    fun chatComplete(id: String, resolvedQuestion: String, answer: Answer) {
+        val w = db.writableDatabase
+        w.beginTransaction()
+        try {
+            val values = ContentValues().apply {
+                put("resolved_question", resolvedQuestion)
+                put("answer_json", ChatAnswerCodec.encode(answer))
+                put("finished_at", now)
+                putNull("failure")
+            }
+            require(w.update("chat_turn", values, "id = ? AND answer_json IS NULL", arrayOf(id)) == 1) {
+                "پیام برای ذخیرهٔ پاسخ پیدا نشد"
+            }
+            w.setTransactionSuccessful()
+        } finally { w.endTransaction() }
+    }
+
+    fun chatFail(id: String, reason: String) {
+        db.writableDatabase.update("chat_turn", ContentValues().apply {
+            put("failure", reason.take(240).ifBlank { "پاسخ به پایان نرسید؛ دوباره تلاش کنید." })
+        }, "id = ? AND answer_json IS NULL", arrayOf(id))
+    }
+
+    fun chatTurns(threadId: String): List<ChatTurn> =
+        db.readableDatabase.query("chat_turn", null, "thread_id = ?", arrayOf(threadId),
+            null, null, "seq ASC").use { c -> buildList { while (c.moveToNext()) add(readChatTurn(c)) } }
+
+    fun chatTurnsAll(): List<ChatTurn> =
+        db.readableDatabase.query("chat_turn", null, null, null, null, null, "seq ASC").use { c ->
+            buildList { while (c.moveToNext()) add(readChatTurn(c)) }
+        }
+
+    private fun readChatTurn(c: Cursor): ChatTurn = ChatTurn(
+        id = c.getString(c.getColumnIndexOrThrow("id")),
+        threadId = c.getString(c.getColumnIndexOrThrow("thread_id")),
+        question = c.getString(c.getColumnIndexOrThrow("question")),
+        resolvedQuestion = c.getString(c.getColumnIndexOrThrow("resolved_question")),
+        answer = c.getString(c.getColumnIndexOrThrow("answer_json"))?.let(ChatAnswerCodec::decode),
+        createdAt = c.getLong(c.getColumnIndexOrThrow("created_at")),
+        finishedAt = c.getLong(c.getColumnIndexOrThrow("finished_at")),
+        failure = c.getString(c.getColumnIndexOrThrow("failure"))
+    )
+
+    private fun chatThreadValues(t: ChatThread): ContentValues = ContentValues().apply {
+        put("id", t.id); put("title", t.title); put("created_at", t.createdAt); put("updated_at", t.updatedAt)
+    }
+
+    private fun chatTurnValues(t: ChatTurn): ContentValues = ContentValues().apply {
+        put("id", t.id); put("thread_id", t.threadId); put("question", t.question)
+        put("resolved_question", t.resolvedQuestion)
+        put("answer_json", t.answer?.let(ChatAnswerCodec::encode))
+        put("created_at", t.createdAt); put("finished_at", t.finishedAt); put("failure", t.failure)
+    }
+
+    private fun chatTitle(question: String): String {
+        val withoutLinks = UrlIngest.links(question).fold(question) { s, url ->
+            s.replace(url, "[پیوند]", ignoreCase = true)
+                .replace(url.removePrefix("https://").removePrefix("http://"), "[پیوند]", ignoreCase = true)
+        }
+        return withoutLinks.replace(Regex("\\s+"), " ").trim().take(54).ifBlank { "گفت‌وگوی تازه" }
+    }
+
     fun resetEverything() {
         val w = db.writableDatabase
         w.beginTransaction()
@@ -929,7 +1114,7 @@ class Repos(private val db: Db) {
                 "listing", "pack", "interview", "memory", "preference", "audit", "event", "knowledge",
                 // v0.5 state: cases, proven queries, source trust and the plan cursor are the user's
                 // data too, and a "full reset" that leaves them behind is a lie.
-                "qa_case", "playbook", "domain_stat", "plan_state"
+                "qa_case", "playbook", "domain_stat", "plan_state", "chat_turn", "chat_thread"
             ).forEach { w.delete(it, null, null) }
             w.setTransactionSuccessful()
         } finally {
@@ -977,6 +1162,8 @@ class Repos(private val db: Db) {
         plans = plansAll(),
         logs = events(5000),
         audits = auditsAll(5000),
+        threads = chatThreads(),
+        turns = chatTurnsAll(),
         answers = allAnswers(),
         preferences = allPreferences()
     )
@@ -991,8 +1178,14 @@ class Repos(private val db: Db) {
         try {
             listOf(
                 "listing", "pack", "interview", "memory", "preference", "audit", "event", "knowledge",
-                "qa_case", "playbook", "domain_stat", "plan_state"
+                "qa_case", "playbook", "domain_stat", "plan_state", "chat_turn", "chat_thread"
             ).forEach { w.delete(it, null, null) }
+            for (thread in snapshot.threads) {
+                w.insertOrThrow("chat_thread", null, chatThreadValues(thread))
+            }
+            for (turn in snapshot.turns) {
+                w.insertOrThrow("chat_turn", null, chatTurnValues(turn))
+            }
             for (pack in snapshot.packs) {
                 val values = ContentValues().apply {
                     put("id", pack.id)

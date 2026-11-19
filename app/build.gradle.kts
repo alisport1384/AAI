@@ -12,8 +12,8 @@ android {
         applicationId = "ir.aai.hushyar"
         minSdk = 26
         targetSdk = 35
-        versionCode = 20
-        versionName = "0.13.0"
+        versionCode = 23
+        versionName = "0.15.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -65,5 +65,13 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 
     testImplementation("junit:junit:4.13.2")
+    // On-JVM SQLite migration/persistence tests: no emulator or NDK required in CI.
+    testImplementation("org.robolectric:robolectric:4.14.1")
     debugImplementation("androidx.compose.ui:ui-tooling")
+}
+
+// Keep the SQLite/Robolectric tests runnable on small local builders as well as in CI.
+tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
+    maxHeapSize = "512m"
+    maxParallelForks = 1
 }

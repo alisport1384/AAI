@@ -124,7 +124,7 @@ class Agent(
 
     private val qa = QaEngine()
 
-    fun run(question: String, allowWeb: Boolean = true): AgentOutcome {
+    fun run(question: String, allowWeb: Boolean = true, forceFresh: Boolean = false): AgentOutcome {
         val now = tools.now()
         val langEnum = LangDetect.detect(question)
         val langTag = if (langEnum == Lang.EN) "en" else "fa"
@@ -168,7 +168,9 @@ class Agent(
                     target = command.payload.ifBlank { question },
                     langTag = langTag,
                     pack = pack,
-                    known = tools.knowledgeAnswerable(question, 5),
+                    // A follow-up asking to refresh must not let cached knowledge satisfy the
+                    // research loop before any page is fetched.
+                    known = if (forceFresh) emptyList() else tools.knowledgeAnswerable(question, 5),
                     budget = ResearchBudget.DEEP,
                     reason = "دستور تحقیق صریح",
                     steps = steps,
@@ -192,6 +194,27 @@ class Agent(
                     )
                 }
             }
+        }
+
+        // An explicit request for *new* evidence must never be fulfilled by the local catalog,
+        // previously read source prices, a case file, or stored knowledge. The RESEARCH command
+        // above already enters the same loop with `known = emptyList()`; this guard also protects
+        // callers that pass a plain topic with forceFresh instead of a command-shaped query.
+        if (forceFresh) {
+            if (!allowWeb) {
+                val answer = Answer(
+                    intent = "web.disabled", text = "برای بررسی تازه به وب نیاز دارم؛ جستجوی وب مجاز نیست.",
+                    refused = true, missing = listOf("دسترسی به شاهد تازه"), lang = langTag,
+                    trace = listOf("پاسخ‌های ذخیره‌شده به‌جای بررسی تازه استفاده نشدند")
+                )
+                return AgentOutcome(answer, steps, actions)
+            }
+            return researchAnswer(
+                target = question, langTag = langTag, pack = pack, known = emptyList(),
+                budget = StudyDepth.escalate(tools.researchBudget(), tools.playbookRefusals(KnowledgeBank.topicKey(question))),
+                reason = "درخواست شاهد تازه؛ آگهی، پرونده و دانش ذخیره‌شده کنار گذاشته شدند",
+                steps = steps, actions = actions, phraser = phraser, step = recorder
+            )
         }
 
         // ---- 2. the ads/listings catalog: free, exact, offline ----

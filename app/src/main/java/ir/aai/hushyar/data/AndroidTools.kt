@@ -361,7 +361,7 @@ object BackupService {
         val file = store.writeBundle(stamp, json, brain, logMd, memoryMd)
         repos.log(
             "backup", "user", "بک‌آپ کامل ساخته شد",
-            "${file.name} | پک=${snapshot.packs.size} آگهی=${snapshot.listings.size} حافظه=${snapshot.memory.size} دانش=${snapshot.knowledge.size} | ${Jalali.format(now)}"
+            "${file.name} | پک=${snapshot.packs.size} آگهی=${snapshot.listings.size} حافظه=${snapshot.memory.size} دانش=${snapshot.knowledge.size} گفتگو=${snapshot.threads.size} پیام=${snapshot.turns.size} | ${Jalali.format(now)}"
         )
         repos.audit("user", "backup.create", file.name, "sha256=${info.sha256.take(16)}")
         return Result(file, info, brain)
@@ -376,7 +376,7 @@ object BackupService {
         repos.restore(snapshot)
         repos.log(
             "backup", "user", "بازیابی انجام شد",
-            "پک=${snapshot.packs.size} آگهی=${snapshot.listings.size} حافظه=${snapshot.memory.size} دانش=${snapshot.knowledge.size} | نسخهٔ فایل=${info.appVersion}"
+            "پک=${snapshot.packs.size} آگهی=${snapshot.listings.size} حافظه=${snapshot.memory.size} دانش=${snapshot.knowledge.size} گفتگو=${snapshot.threads.size} پیام=${snapshot.turns.size} | نسخهٔ فایل=${info.appVersion}"
         )
         return info
     }
@@ -389,7 +389,13 @@ object BackupService {
         append("پشتیبان نسخهٔ ").append(info.appVersion)
         append(" · ").append(Jalali.format(info.createdAt))
         append(" · ")
-        append(info.counts.entries.joinToString("، ") { "${it.key}=${Text.num(it.value.toLong())}" })
-        append(" · sha256=").append(info.sha256.take(12))
+        val labels = mapOf(
+            "packs" to "بسته", "listings" to "آگهی", "memory" to "یادسپاری",
+            "knowledge" to "دانسته", "cases" to "پرونده", "playbook" to "مسیر",
+            "plans" to "برنامه", "logs" to "رویداد", "audits" to "ممیزی",
+            "threads" to "گفت‌وگو", "turns" to "پیام"
+        )
+        append(info.counts.entries.joinToString("، ") { "${labels[it.key] ?: it.key}=${Text.num(it.value.toLong())}" })
+        append(" · شناسهٔ صحت=").append(info.sha256.take(12))
     }
 }

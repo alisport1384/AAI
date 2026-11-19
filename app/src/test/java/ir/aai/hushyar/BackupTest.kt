@@ -1,6 +1,12 @@
 package ir.aai.hushyar
 
 import ir.aai.hushyar.core.Text
+import ir.aai.hushyar.core.Json
+import ir.aai.hushyar.core.MiniJson
+import ir.aai.hushyar.domain.Answer
+import ir.aai.hushyar.domain.ChatThread
+import ir.aai.hushyar.domain.ChatTurn
+import ir.aai.hushyar.domain.Citation
 import ir.aai.hushyar.domain.AuditEntry
 import ir.aai.hushyar.domain.Backup
 import ir.aai.hushyar.domain.Interview
@@ -168,6 +174,57 @@ class BackupTest {
         assertEquals("k2", restored.supersededById)
         assertEquals(2, restored.sourceCount)
         assertFalse(restored.fresh)
+    }
+
+    @Test
+    fun separateConversationsAndPendingMessagesSurviveBackup() {
+        val threads = listOf(
+            ChatThread("c1", "قیمت نبشی", 1_000L, 3_000L),
+            ChatThread("c2", "گفت‌وگوی دیگر", 4_000L, 5_000L)
+        )
+        val answer = Answer("price", "پاسخ قبلی", citations = listOf(Citation("K1", "جدول", "https://example.org/p")),
+            trace = listOf("بررسی محلی"), refused = false)
+        val turns = listOf(
+            ChatTurn("t1", "c1", "قیمت نبشی ۴ چنده؟", "قیمت نبشی ۴ چنده؟", answer, 2_000L, 2_100L),
+            ChatTurn("t2", "c1", "منبعش؟", "منبعش؟", answer, 3_000L, 3_100L),
+            ChatTurn("t3", "c2", "سلام", createdAt = 5_000L, failure = "پاسخ به پایان نرسید")
+        )
+        val encoded = Backup.encode(Backup.Snapshot(threads = threads, turns = turns,
+            preferences = mapOf("chat.active_id" to "c1")), "0.14.0", 6_000L)
+        assertEquals(2, Backup.inspect(encoded).counts["threads"])
+        assertEquals(3, Backup.inspect(encoded).counts["turns"])
+        val decoded = Backup.decode(encoded)
+        assertEquals(threads, decoded.threads)
+        assertEquals(turns, decoded.turns)
+        assertEquals(listOf(Citation("K1", "جدول", "https://example.org/p")), decoded.turns.first().answer!!.citations)
+        assertEquals("c1", decoded.preferences["chat.active_id"])
+    }
+
+    @Test
+    fun genuineV4WithoutConversationBlocksRestoresAsEmptyChats() {
+        val modern = MiniJson.parse(Backup.encode(Backup.Snapshot(), "0.13.0", 6_000L,
+            schema = "hushyar.backup/4")) as Json.Obj
+        val data = modern["data"] as Json.Obj
+        val oldData = Json.Obj(data.fields.filterKeys { it != "threads" && it != "turns" })
+        val oldEnvelope = Json.Obj(modern.fields + mapOf(
+            "data" to oldData,
+            "sha256" to MiniJson.str(Backup.sha256(MiniJson.write(oldData, pretty = false)))
+        ))
+        val restored = Backup.decode(MiniJson.write(oldEnvelope))
+        assertTrue(restored.threads.isEmpty())
+        assertTrue(restored.turns.isEmpty())
+    }
+
+    @Test
+    fun orphanConversationMessageIsRejectedEvenWithValidChecksum() {
+        val orphan = ChatTurn("t-orphan", "missing", "سلام", createdAt = 1L)
+        val encoded = Backup.encode(Backup.Snapshot(turns = listOf(orphan)), "0.14.0", 2L)
+        try {
+            Backup.decode(encoded)
+            fail("پیامِ بدون گفت‌وگو نباید بازیابی شود")
+        } catch (expected: Backup.BackupException) {
+            assertTrue(expected.message!!.contains("گفت‌وگو"))
+        }
     }
 
     @Test

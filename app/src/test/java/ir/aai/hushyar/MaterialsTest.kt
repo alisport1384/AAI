@@ -73,6 +73,19 @@ class MaterialsTest {
     }
 
     @Test
+    fun nominalAngleFourIsFortyMillimetresWithoutInventingThickness() {
+        val short = Materials.read("قیمت نبشی ۴")!!
+        assertEquals(40.0, short.size!!, 0.001)
+        assertNull(short.thicknessMm)
+        assertTrue(short.assumptions.any { it.contains("۴۰") })
+        assertEquals(40.0, Materials.read("برای ۲ کیلو قیمت نبشی ۴")!!.size!!, 0.001)
+        assertEquals(40.0, Materials.read("قیمت نبشی ۴ سانتی‌متر")!!.size!!, 0.001)
+        assertEquals(40.0, Materials.read("قیمت نبشی ۴۰ میلی‌متر")!!.size!!, 0.001)
+        assertNull("چهار میلی‌متر نباید خودکار به چهل تعبیر شود",
+            Materials.read("قیمت نبشی ۴ میلی‌متر")!!.size)
+    }
+
+    @Test
     fun bigNumberForBeamMeansMillimetres() {
         assertEquals(listOf(18.0), Materials.read("قیمت تیرآهن ۱۸۰")!!.sizes)
     }

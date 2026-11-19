@@ -5,6 +5,11 @@ import ir.aai.hushyar.domain.Agent
 import ir.aai.hushyar.domain.AgentTools
 import ir.aai.hushyar.domain.CaseStore
 import ir.aai.hushyar.domain.Catalog
+import ir.aai.hushyar.domain.ChatTurn
+import ir.aai.hushyar.domain.Answer
+import ir.aai.hushyar.domain.Citation
+import ir.aai.hushyar.domain.ConversationContext
+import ir.aai.hushyar.domain.QuestionReader
 import ir.aai.hushyar.domain.DomainStat
 import ir.aai.hushyar.domain.DomainTrust
 import ir.aai.hushyar.domain.Evidence
@@ -34,6 +39,7 @@ import ir.aai.hushyar.domain.SearchCore
 import ir.aai.hushyar.domain.SearchReport
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -470,6 +476,75 @@ class AgentTest {
         assertEquals(searchHitsAfterFirst, tools.logs.count { it.kind == "web" })
         assertTrue(second.steps.none { it.tool == "web.search" })
         assertTrue(stored == tools.knowledge.size)
+    }
+
+    @Test
+    fun forceFreshNeverReplaysCatalogCaseOrKnowledgeWhenWebFails() {
+        val question = "قیمت گوشی سامسونگ گلکسی S24 چقدر است؟"
+        val tools = tools(withWeb = false)
+        val model = QuestionReader.read(question)
+        tools.caseLearn(model, question, "قیمت گوشی سامسونگ گلکسی S24 ۳۹ میلیون تومان است", null)
+        assertNotNull("old case must actually be reusable for this test", tools.caseFind(model, question))
+        tools.listings = listOf(
+            listing("گوشی سامسونگ گلکسی S24 حافظه 256", 39_000_000),
+            listing("گوشی سامسونگ گلکسی S24 حافظه 256", 39_500_000)
+        )
+        assertFalse("the cached catalog would normally answer", Agent(tools).run(question).answer.refused)
+        assertTrue(tools.searchedQueries.isEmpty())
+
+        val refreshed = Agent(tools).run(question, forceFresh = true)
+        assertTrue("a new web search must run", tools.searchedQueries.isNotEmpty())
+        assertTrue(refreshed.steps.any { it.tool == "research.start" })
+        assertFalse(refreshed.steps.any { it.tool == "case.reuse" || it.tool == "knowledge.answer" })
+        assertTrue("no new evidence means refusal, not the old price", refreshed.answer.refused)
+        assertFalse((refreshed.answer.text + refreshed.answer.bullets.joinToString()).contains("۳۹"))
+
+        val searches = tools.searchedQueries.size
+        val withoutWeb = Agent(tools).run(question, allowWeb = false, forceFresh = true)
+        assertTrue(withoutWeb.answer.refused)
+        assertEquals(searches, tools.searchedQueries.size)
+    }
+
+    @Test
+    fun updateFollowUpWithoutLinkSearchesRatherThanReplayingAUsableCase() {
+        val oldQuestion = "قیمت گوشی سامسونگ گلکسی S24 چقدر است؟"
+        val previous = ChatTurn("t1", "thread-a", oldQuestion,
+            answer = Answer("price", "قیمت قبلی ۳۹ میلیون تومان"), createdAt = NOW, finishedAt = NOW)
+        val resolved = ConversationContext.resolve("الان به‌روزش کن", "thread-a", listOf(previous))
+        assertTrue(resolved.forceFresh)
+        assertTrue(resolved.effectiveQuestion.startsWith("تحقیق کن دربارهٔ"))
+
+        val tools = tools(withWeb = false)
+        tools.caseLearn(QuestionReader.read(oldQuestion), oldQuestion,
+            "قیمت گوشی سامسونگ گلکسی S24 ۳۹ میلیون تومان است", null)
+        assertNotNull(tools.caseFind(QuestionReader.read(oldQuestion), oldQuestion))
+        tools.listings = listOf(listing("گوشی سامسونگ گلکسی S24 حافظه 256", 39_000_000))
+        val result = Agent(tools).run(resolved.effectiveQuestion, forceFresh = resolved.forceFresh)
+        assertTrue(result.steps.any { it.tool == "web.search" })
+        assertTrue(tools.searchedQueries.isNotEmpty())
+        assertTrue(result.answer.refused)
+        assertFalse(result.answer.intent == "case.reuse")
+        assertFalse((result.answer.text + result.answer.bullets.joinToString()).contains("۳۹ میلیون"))
+    }
+
+    @Test
+    fun updateFollowUpTriesThePreviousLinkAgainAndDoesNotReturnItsOldPrice() {
+        val url = "https://example.org/price"
+        val previous = ChatTurn("t1", "thread-a",
+            "قیمت گوشی سامسونگ گلکسی S24 از $url چقدر است؟",
+            answer = Answer("price", "قیمت قبلی ۳۹ میلیون تومان", citations = listOf(Citation("P1", "فروشنده", url))),
+            createdAt = NOW, finishedAt = NOW)
+        val resolved = ConversationContext.resolve("الان به‌روزش کن", "thread-a", listOf(previous))
+        assertTrue(resolved.forceFresh)
+        assertTrue(resolved.effectiveQuestion.contains(url))
+
+        val tools = tools(withWeb = false)
+        tools.failedUrls = setOf(url)
+        tools.listings = listOf(listing("گوشی سامسونگ گلکسی S24 حافظه 256", 39_000_000))
+        val current = Agent(tools).run(resolved.effectiveQuestion, forceFresh = resolved.forceFresh)
+        assertTrue(current.steps.any { it.tool == "sources.fetch" && it.args["url"] == url })
+        assertTrue("an unreachable link must not silently reuse yesterday's answer", current.answer.refused)
+        assertFalse((current.answer.text + current.answer.bullets.joinToString()).contains("۳۹ میلیون"))
     }
 
     @Test

@@ -555,12 +555,24 @@ class LocalChatter(
     private val maxTokens: Int = 256
 ) {
 
-    fun reply(question: String, lang: String = "fa"): LocalGeneration {
+    fun reply(question: String, lang: String = "fa", history: List<ChatTurn> = emptyList()): LocalGeneration {
         if (!generator.ready) {
             return LocalGeneration(error = "مدل محلی نصب یا بارگذاری نشده است")
         }
         if (question.isBlank()) return LocalGeneration(error = "پرسش خالی است")
-        val prompt = LocalPrompt.chat(spec.family, LocalPrompt.system(lang), question.trim())
+        val recent = history.filter { it.answer != null }.takeLast(3)
+        val user = if (recent.isEmpty()) question.trim() else buildString {
+            append("این‌ها فقط پیام‌های همین گفت‌وگو هستند؛ هیچ عدد قدیمی شاهد قیمت امروز نیست.\n")
+            recent.forEach { turn ->
+                append("کاربر: ").append(turn.question.take(180)).append('\n')
+                append("هوشیار (پاسخ قبلی): ").append(turn.answer!!.text.take(180)).append('\n')
+            }
+            append("پیام جدید کاربر: ").append(question.trim())
+        }
+        val system = if (recent.isEmpty()) LocalPrompt.system(lang) else
+            "تو دستیار محلی هستی. فقط برای گفت‌وگوی ساده پاسخ بده؛ ادعای واقعی یا عدد بدون شاهد نساز. " +
+                "پیام‌های قبلی فقط زمینه‌اند، نه منبع تازه."
+        val prompt = LocalPrompt.chat(spec.family, system, user)
         return generator.generate(prompt, maxTokens)
     }
 }

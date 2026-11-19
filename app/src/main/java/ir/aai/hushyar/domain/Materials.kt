@@ -264,6 +264,17 @@ object Materials {
         val numbers = Regex("[0-9]+(?:\\.[0-9]+)?").findAll(norm).mapNotNull { it.value.toDoubleOrNull() }.toList()
         val hasMmWord = MM_WORDS.any { norm.contains(it) }
         val hasCmWord = CM_WORDS.any { norm.contains(it) }
+        // بازار «نبشی ۴» را معمولاً بال ۴ سانتی/۴۰ میلی‌متری می‌نامد.
+        // اندازه باید بلافاصله پس از نام کالا باشد تا «برای ۲ کیلو نبشی ۴»
+        // مقدار سفارش را به‌اشتباه اندازهٔ نبشی نگیرد. «۴ میلی‌متر» صریحاً ۴ است.
+        val angleLabelSize = if (product.kind == ProductKind.ANGLE)
+            Regex("نبشی\\s*([0-9]+(?:\\.[0-9]+)?)").find(norm)?.groupValues?.get(1)?.toDoubleOrNull()
+        else null
+        val explicitAngleMm = hasMmWord || Regex("(?<![\\p{L}])میل(?![\\p{L}])").containsMatchIn(norm)
+        val angleSizeMm = angleLabelSize?.let { size ->
+            val mm = if (hasCmWord || (!explicitAngleMm && size in 2.0..20.0)) size * 10.0 else size
+            mm.takeIf { it in 15.0..200.0 }
+        }
 
         // زنجیرهٔ ابعاد مثل «۴۰×۴۰×۲» یا «۶۰×۳» را مستقیم می‌خوانیم؛ دقتش از حدس بیشتر است.
         val chain = dimsChain(norm)
@@ -279,7 +290,9 @@ object Materials {
                 thickness = chain.getOrNull(2) ?: explicitThickness(norm)
             }
             ProductKind.ANGLE -> {
-                sizes = chain.take(1).ifEmpty { sizesOf(product, numbers, norm, hasMmWord, hasCmWord) }
+                sizes = chain.take(1).ifEmpty {
+                    listOfNotNull(angleSizeMm).ifEmpty { sizesOf(product, numbers, norm, hasMmWord, hasCmWord) }
+                }
                 thickness = chain.getOrNull(1) ?: explicitThickness(norm)
             }
             else -> {
@@ -313,6 +326,10 @@ object Materials {
         if (hasMmWord) lines += "«میل/میلی‌متر» = یکای اندازه در این پرسش (نه تعداد و نه وزن)"
 
         val assumptions = mutableListOf<String>()
+        if (product.kind == ProductKind.ANGLE && angleLabelSize != null &&
+            angleLabelSize in 2.0..20.0 && !explicitAngleMm && sizes.firstOrNull() == angleLabelSize * 10.0) {
+            assumptions += "نام رایج «نبشی ${num(angleLabelSize)}» به بال ${num(angleLabelSize * 10.0)} میلی‌متر تعبیر شد؛ ضخامت و سازنده از این نام معلوم نیستند"
+        }
         if (ask == MaterialAsk.PRICE) {
             if (basis == null) {
                 assumptions += "پایهٔ قیمت در پرسش نیامده؛ هر پایه‌ای که وزنش را بدانم حساب می‌کنم (کیلو، متر، شاخه/برگ)"

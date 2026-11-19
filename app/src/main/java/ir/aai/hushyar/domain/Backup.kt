@@ -12,10 +12,10 @@ import java.security.MessageDigest
  */
 object Backup {
 
-    const val SCHEMA: String = "hushyar.backup/4"
+    const val SCHEMA: String = "hushyar.backup/5"
 
-    /** Older snapshots stay restorable: v0.2 files simply carry no knowledge block. */
-    val ACCEPTED_SCHEMAS: Set<String> = setOf(SCHEMA, "hushyar.backup/3", "hushyar.backup/2")
+    /** Older snapshots contain no conversation block, and remain restorable. */
+    val ACCEPTED_SCHEMAS: Set<String> = setOf(SCHEMA, "hushyar.backup/4", "hushyar.backup/3", "hushyar.backup/2")
 
     data class Snapshot(
         val packs: List<MarketPack> = emptyList(),
@@ -30,6 +30,8 @@ object Backup {
         val plans: List<PlanProgress> = emptyList(),
         val logs: List<LogEvent> = emptyList(),
         val audits: List<AuditEntry> = emptyList(),
+        val threads: List<ChatThread> = emptyList(),
+        val turns: List<ChatTurn> = emptyList(),
         val answers: Map<String, String> = emptyMap(),
         val preferences: Map<String, String> = emptyMap()
     )
@@ -174,6 +176,22 @@ object Backup {
                     "detail" to MiniJson.str(audit.detail)
                 )
             }),
+            "threads" to MiniJson.arr(snapshot.threads.map { thread -> MiniJson.obj(
+                "id" to MiniJson.str(thread.id),
+                "title" to MiniJson.str(thread.title),
+                "createdAt" to MiniJson.num(thread.createdAt),
+                "updatedAt" to MiniJson.num(thread.updatedAt)
+            ) }),
+            "turns" to MiniJson.arr(snapshot.turns.map { turn -> MiniJson.obj(
+                "id" to MiniJson.str(turn.id),
+                "threadId" to MiniJson.str(turn.threadId),
+                "question" to MiniJson.str(turn.question),
+                "resolvedQuestion" to MiniJson.str(turn.resolvedQuestion),
+                "answer" to (turn.answer?.let { MiniJson.str(ChatAnswerCodec.encode(it)) } ?: Json.Null),
+                "createdAt" to MiniJson.num(turn.createdAt),
+                "finishedAt" to MiniJson.num(turn.finishedAt),
+                "failure" to MiniJson.str(turn.failure.orEmpty())
+            ) }),
             "answers" to MiniJson.objOf(snapshot.answers.mapValues { MiniJson.str(it.value) }),
             "preferences" to MiniJson.objOf(snapshot.preferences.mapValues { MiniJson.str(it.value) })
         )
@@ -194,7 +212,9 @@ object Backup {
                     "playbook" to MiniJson.num(snapshot.playbook.size),
                     "plans" to MiniJson.num(snapshot.plans.size),
                     "logs" to MiniJson.num(snapshot.logs.size),
-                    "audits" to MiniJson.num(snapshot.audits.size)
+                    "audits" to MiniJson.num(snapshot.audits.size),
+                    "threads" to MiniJson.num(snapshot.threads.size),
+                    "turns" to MiniJson.num(snapshot.turns.size)
                 )
             ),
             "data" to data
@@ -363,6 +383,39 @@ object Backup {
             )
         }
 
+        val threads = data["threads"]?.asObjects().orEmpty().map { row ->
+            ChatThread(
+                id = row["id"]?.asStringOrNull()?.takeIf { it.isNotBlank() }
+                    ?: throw BackupException("گفت‌وگوی بدون شناسه"),
+                title = row["title"]?.asStringOrNull() ?: "گفت‌وگوی تازه",
+                createdAt = row["createdAt"]?.asLongOrNull() ?: 0L,
+                updatedAt = row["updatedAt"]?.asLongOrNull() ?: 0L
+            )
+        }
+        val turns = data["turns"]?.asObjects().orEmpty().map { row ->
+            val rawAnswer = row["answer"]?.asStringOrNull()
+            ChatTurn(
+                id = row["id"]?.asStringOrNull()?.takeIf { it.isNotBlank() }
+                    ?: throw BackupException("پیام بدون شناسه"),
+                threadId = row["threadId"]?.asStringOrNull()?.takeIf { it.isNotBlank() }
+                    ?: throw BackupException("پیام بدون شناسهٔ گفت‌وگو"),
+                question = row["question"]?.asStringOrNull()?.takeIf { it.isNotBlank() }
+                    ?: throw BackupException("پیام خالی در پشتیبان"),
+                resolvedQuestion = row["resolvedQuestion"]?.asStringOrNull().orEmpty(),
+                answer = rawAnswer?.let { encoded ->
+                    runCatching { ChatAnswerCodec.decode(encoded) }
+                        .getOrElse { throw BackupException("پاسخ پیام خوانا نیست: ${it.message}") }
+                },
+                createdAt = row["createdAt"]?.asLongOrNull() ?: 0L,
+                finishedAt = row["finishedAt"]?.asLongOrNull() ?: 0L,
+                failure = row["failure"]?.asStringOrNull()?.takeIf { it.isNotBlank() }
+            )
+        }
+        if (threads.map { it.id }.distinct().size != threads.size || turns.map { it.id }.distinct().size != turns.size ||
+            turns.any { turn -> threads.none { it.id == turn.threadId } }) {
+            throw BackupException("پیام‌ها یا شناسه‌های گفت‌وگو در پشتیبان ناسازگارند")
+        }
+
         return Snapshot(
             packs = packs,
             activePackId = activeId,
@@ -375,6 +428,8 @@ object Backup {
             plans = plans,
             logs = logs,
             audits = audits,
+            threads = threads,
+            turns = turns,
             answers = data["answers"]?.fieldsOrEmpty?.mapValues { it.value.asStringOrNull().orEmpty() } ?: emptyMap(),
             preferences = data["preferences"]?.fieldsOrEmpty?.mapValues { it.value.asStringOrNull().orEmpty() } ?: emptyMap()
         )

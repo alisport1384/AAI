@@ -1,5 +1,7 @@
 package ir.aai.hushyar.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -7,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -27,6 +30,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import ir.aai.hushyar.AppViewModel
@@ -47,6 +51,21 @@ fun BackendScreen(vm: AppViewModel) {
     var sourceTitle by remember { mutableStateOf("") }
     var sourceUrl by remember { mutableStateOf("") }
     var sourceError by remember { mutableStateOf<String?>(null) }
+    var personalUrl by remember { mutableStateOf(vm.personalBackendUrl) }
+    var personalPin by remember { mutableStateOf(vm.personalBackendPin) }
+    var personalToken by remember { mutableStateOf("") }
+    var personalError by remember { mutableStateOf<String?>(null) }
+    var deletePersonalId by remember { mutableStateOf<String?>(null) }
+    var confirmPurge by remember { mutableStateOf(false) }
+    val textPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) vm.indexPersonalDocument(uri)
+    }
+
+    LaunchedEffect(vm.personalBackendUrl, vm.personalBackendPin) {
+        personalUrl = vm.personalBackendUrl
+        personalPin = vm.personalBackendPin
+    }
+    LaunchedEffect(vm.selectedChatId, vm.personalBackendConfigured) { vm.refreshPersonalDocuments() }
 
     LaunchedEffect(vm.goalText, vm.environmentText, vm.directiveText) {
         goal = vm.goalText
@@ -182,6 +201,82 @@ fun BackendScreen(vm: AppViewModel) {
         }
 
         HorizontalDivider()
+        SectionTitle("بک‌اند شخصیِ اختیاری — بدون API پولی")
+        Body("اپ بدون این سرور کار می‌کند. فقط وقتی «از اسنادم: ...» بپرسی یا دکمهٔ ارسال فایل را بزنی، " +
+            "همان پرسش یا فایلِ انتخاب‌شده به سرور شخصیِ خودت فرستاده می‌شود؛ تاریخچهٔ کامل گفتگو خودکار ارسال نمی‌شود. " +
+            "سرور باید HTTPS، گواهی با اثر انگشت SHA-256 و کلید محرمانه داشته باشد. راه‌اندازی: docs/V15-HYBRID.md")
+        OutlinedTextField(
+            value = personalUrl,
+            onValueChange = { personalUrl = it },
+            label = { Text("نشانی HTTPS سرور شخصی") },
+            placeholder = { Text("https://192.168.1.10:8765") },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+            modifier = Modifier.fillMaxWidth()
+        )
+        OutlinedTextField(
+            value = personalPin,
+            onValueChange = { personalPin = it },
+            label = { Text("اثر انگشت SHA-256 گواهی (۶۴ رقم)") },
+            modifier = Modifier.fillMaxWidth()
+        )
+        OutlinedTextField(
+            value = personalToken,
+            onValueChange = { personalToken = it },
+            label = { Text("کلید دسترسی سرور؛ برای ثبت دوباره وارد کن") },
+            visualTransformation = PasswordVisualTransformation(),
+            modifier = Modifier.fillMaxWidth()
+        )
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = {
+                personalError = vm.savePersonalBackend(personalUrl, personalPin, personalToken)
+                if (personalError == null) personalToken = ""
+            }, enabled = personalUrl.isNotBlank() && personalPin.isNotBlank() && personalToken.isNotBlank() &&
+                !vm.loading && !vm.chatBusy, modifier = Modifier.weight(1f)) { Text("ثبت اتصال") }
+            OutlinedButton(onClick = vm::testPersonalBackend,
+                enabled = vm.personalBackendConfigured && !vm.loading && !vm.chatBusy,
+                modifier = Modifier.weight(1f)) { Text("آزمون اتصال") }
+        }
+        personalError?.let {
+            Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+        }
+        if (vm.personalBackendConfigured) {
+            Body("کلید با Android Keystore روی گوشی نگهداری می‌شود و داخل ZIP پشتیبان نیست. " +
+                "اسنادِ سرور هم داخل پشتیبان گوشی نیستند؛ برایشان جداگانه از پایگاه دادهٔ سرور بک‌آپ بگیر.")
+            OutlinedButton(onClick = vm::disconnectPersonalBackend, enabled = !vm.loading && !vm.chatBusy) {
+                Text("قطع اتصال و حذف کلید از گوشی (نه اسناد سرور)")
+            }
+        }
+        val selected = vm.chatThreads.firstOrNull { it.id == vm.selectedChatId }
+        SectionTitle("اسناد همین گفتگو: ${selected?.title ?: "گفتگویی انتخاب نشده"}")
+        Body("فقط فایل UTF-8 نوع txt، md، csv یا html تا ۱۰۰ کیلوبایت. PDF/OCR و جستجوی معناییِ برداری در این مرحله نیست.")
+        OutlinedButton(onClick = { textPicker.launch(arrayOf("*/*")) },
+            enabled = vm.personalBackendConfigured && selected != null && !vm.loading && !vm.chatBusy,
+            modifier = Modifier.fillMaxWidth()) { Text("انتخاب و ارسال فایل متنی به سرور شخصی") }
+        if (vm.personalBackendConfigured && selected != null) {
+            TextButton(onClick = vm::refreshPersonalDocuments, enabled = !vm.loading && !vm.chatBusy) {
+                Text("تازه‌سازی فهرست اسناد")
+            }
+            vm.personalDocuments.forEach { doc ->
+                Card(Modifier.fillMaxWidth()) {
+                    Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("${doc.title} · ${doc.chunks} بخش", modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodySmall)
+                        TextButton(onClick = { deletePersonalId = doc.id }, enabled = !vm.loading && !vm.chatBusy) {
+                            Text("حذف از سرور")
+                        }
+                    }
+                }
+            }
+            if (vm.personalDocuments.isNotEmpty()) {
+                OutlinedButton(onClick = { confirmPurge = true }, enabled = !vm.loading && !vm.chatBusy) {
+                    Text("پاک‌کردن اسناد همین گفتگو از سرور")
+                }
+            }
+            Body("برای پرسش از همین فایل‌ها، در تب «پرسش» بنویس: از اسنادم: وزن نبشی ۴ چیست؟ " +
+                "قیمت امروز را از سند قدیمی پاسخ نمی‌دهم؛ برای وب زنده بدون این پیشوند بپرس.")
+        }
+
+        HorizontalDivider()
         SectionTitle("لاگ")
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
@@ -218,4 +313,21 @@ fun BackendScreen(vm: AppViewModel) {
             ModelTab(vm)
         }
     }
+    deletePersonalId?.let { id ->
+        val name = vm.personalDocuments.firstOrNull { it.id == id }?.title ?: "این سند"
+        AlertDialog(
+            onDismissRequest = { deletePersonalId = null },
+            title = { Text("حذف سند از سرور شخصی؟") },
+            text = { Text("«$name» فقط از اسناد همین گفتگو روی سرور حذف می‌شود. پیام‌های روی گوشی باقی می‌مانند.") },
+            confirmButton = { TextButton(onClick = { vm.removePersonalDocument(id); deletePersonalId = null }) { Text("حذف") } },
+            dismissButton = { TextButton(onClick = { deletePersonalId = null }) { Text("انصراف") } }
+        )
+    }
+    if (confirmPurge) AlertDialog(
+        onDismissRequest = { confirmPurge = false },
+        title = { Text("پاک‌کردن همهٔ اسناد این گفتگو از سرور؟") },
+        text = { Text("این کار فقط اسناد نمایه‌شدهٔ همین گفتگو را از سرور شخصی حذف می‌کند؛ پیام‌ها و گفتگوهای دیگر روی گوشی دست‌نخورده می‌مانند.") },
+        confirmButton = { TextButton(onClick = { vm.purgePersonalThread(); confirmPurge = false }) { Text("پاک‌کردن از سرور") } },
+        dismissButton = { TextButton(onClick = { confirmPurge = false }) { Text("انصراف") } }
+    )
 }

@@ -887,12 +887,18 @@ internal fun ModelTab(vm: AppViewModel) {
 @Composable
 private fun BackupTab(vm: AppViewModel) {
     var paste by remember { mutableStateOf("") }
+    var toExport by remember { mutableStateOf<String?>(null) }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) vm.restoreFromUri(uri)
     }
+    val saveOutside = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
+        val name = toExport
+        if (uri != null && name != null) vm.exportBackupToUri(name, uri)
+        toExport = null
+    }
 
     SectionTitle("پشتیبان کامل")
-    Body("یک فایل ZIP شامل: backup.json (بازگردانی کامل)، brain.md (دفتر هوش)، لاگ و حافظه. چک‌سام SHA-256 داخل فایل نوشته می‌شود و بازیابی بدون تطابق چک‌سام انجام نمی‌شود.")
+    Body("یک فایل ZIP شامل backup.json (دانش و گفت‌وگوها)، دفتر هوش و لاگ است. چک‌سام SHA-256 هنگام بازیابی بررسی می‌شود. بک‌آپ داخل اپ با حذف اپ پاک می‌شود؛ حتماً آن را با «ذخیره بیرون از اپ» کپی کن. فایل مدل جداگانه ذخیره می‌شود.")
     Button(onClick = { vm.backup() }, modifier = Modifier.fillMaxWidth()) { Text("ساخت بک‌آپ") }
 
     HorizontalDivider()
@@ -924,6 +930,9 @@ private fun BackupTab(vm: AppViewModel) {
                     TextButton(onClick = { vm.readBackupPreview(name) }) { Text("بررسی") }
                     if (name.endsWith(".zip")) {
                         TextButton(onClick = { vm.restoreBackupFile(name) }) { Text("بازیابی") }
+                        TextButton(onClick = { toExport = name; saveOutside.launch(name) }) {
+                            Text("ذخیره بیرون از اپ")
+                        }
                     }
                 }
             }
