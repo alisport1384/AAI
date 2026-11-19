@@ -218,17 +218,19 @@ object ConversationContext {
         ) {
             return ConversationResolution("قیمت $clean چقدر است؟", usedHistory = true, note = "موضوع را از پاسخ روشن‌کننده تکمیل کردم.")
         }
-        // تکمیل پرسش قبلی: کاربر فقط جزئیات اضافه می‌دهد ("ضخامت 4" / "برای تهران" / "10 شاخه" / "سایز 16")
-        // این پیام‌ها موضوع تازه نیستند — باید به موضوع قبلی بچسبند
-        val looksLikeSupplement = explicit.isNotEmpty() && !refers && clean.length <= 60 && (
-            Regex("(?i)(ضخامت|قطر|سایز|سایز|اندازه|ابعاد|طول|عرض|گرید|گرید|استاندارد|شاخه|عدد|تن|کیلو|برگ|رول|شاخه|برای|تهران|اصفهان|مشهد|تبریز|شیراز|ارسال|حمل|قیمتش|موجود)").containsMatchIn(normalized) ||
-            Regex("[0-9۰-۹]").containsMatchIn(clean) && clean.split(Regex("\\s+")).size <= 5
+        // تکمیل پرسش قبلی: فقط وقتی پیام، نام محصول جدید ندارد — مثلاً «ضخامت 4» یا «برای تهران»
+        // اگر پیام خودش نام محصول دیگر دارد (ورق vs نبشی) موضوع تازه است نه تکمیل
+        val PRODUCT_WORDS = setOf("ورق","پلیت","صفحه","میلگرد","تیرآهن","تیر","هاش","نبشی","ناودانی","سپری","پروفیل","قوطی","لوله","بولت","انکر","تسمه","چهارپهلو","مفتول","مش","توری","رابیتس","شمش","قراضه")
+        val hasProductWord = PRODUCT_WORDS.any { normalized.contains(it) }
+        val looksLikeSupplement = !refers && clean.length <= 60 && !hasProductWord && (
+            Regex("(?i)(ضخامت|قطر|سایز|اندازه|ابعاد|طول|عرض|گرید|استاندارد|شاخه|عدد|تن|کیلو|برگ|رول|برای|تهران|اصفهان|مشهد|تبریز|شیراز|ارسال|حمل|قیمتش|موجود|سایز)").containsMatchIn(normalized)
         )
         if (looksLikeSupplement && previousSubject.isNotEmpty()) {
             val merged = "$previousSubject؛ $clean"
             return ConversationResolution(merged, usedHistory = true, note = "جزئیات تکمیلی به موضوع قبلی «$previousSubject» افزوده شد؛ یک پرسش کامل ساخته شد.")
         }
-        if (!refers && explicit.isNotEmpty() && !looksLikeSupplement) return ConversationResolution(clean)
+        // تغییر محصول صریح (ورق vs نبشی) موضوع تازه است — حتی اگر کوتاه باشد
+        if (!refers && explicit.isNotEmpty()) return ConversationResolution(clean)
         if (previousSubject.isEmpty() && explicit.isEmpty()) {
             return clarify(clean, "موضوع پیام قبلی مشخص نبود؛ لطفاً نام کالا یا موضوع را بگو.")
         }
