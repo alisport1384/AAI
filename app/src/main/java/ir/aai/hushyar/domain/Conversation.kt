@@ -118,6 +118,7 @@ object ConversationContext {
     private val SOURCE = Regex("(?i)منبع|منابع|از کجا|source|citation|reference")
     private val EXPLAIN_NUMBER = Regex("(?i)چرا\\s+(?:این|اون|همون)\\s+(?:عدد|قیمت)|این\\s+عدد\\s+از\\s+کجا")
     private val REFRESH = Regex("(?i)بروز|به\\s*روز|تازه\\s*کن|دوباره\\s*بررسی|refresh|update")
+    private val CORRECTION = Regex("(?i)(?:^|\\s)(?:نه|نخیر|اشتباه|غلط|درستش\\s*کن|اصلاح\\s*کن|این\\s*نیست|این\\s*اشتباه|no|wrong|incorrect|not\\s+this)(?:\\s|$|!|؟|\\?)")
     private val LINK_REFERENCE = Regex("(?i)(?:همان|همون|این|اون)\\s+(?:لینک|سایت|منبع)|لینکش|same\\s+link|that\\s+link")
     private val COMPARE_FOLLOWUP = Regex("(?i)کدومش|کدامش|مقایسهشون|فرقشون|بینشون|دوتاشون|هر\\s*دو|compare\\s+them|which\\s+one")
     private val AMBIGUOUS = Regex("(?i)(?:اون|آن|همون)\\s+یکی|دومی|اولی|the other one")
@@ -149,6 +150,17 @@ object ConversationContext {
                     refused = previous == null,
                     missing = if (previous == null) listOf("سؤال قبلی در همین گفتگو") else emptyList(),
                     trace = listOf("یادآوری محلی؛ ادعای قیمت/وب بازبینی نشده است")))
+        }
+        // Correction: "نه! این اشتباست، فلان کارو بکن" — discard previous answer, force fresh research.
+        if (CORRECTION.containsMatchIn(normalized) && last != null) {
+            val corrected = clean.replace(CORRECTION, " ").trim().trim('!', '؟', '?', '،', ':')
+            val effective = if (corrected.length >= 4) corrected else clean
+            return ConversationResolution(
+                "تحقیق کن دربارهٔ $effective",
+                usedHistory = true,
+                note = "اصلاح کاربر تشخیص داده شد؛ پاسخ قبلی کنار گذاشته شد و جستجوی تازه انجام می‌شود.",
+                forceFresh = true
+            )
         }
         if (normalized in SIMPLE_TALK) return ConversationResolution(clean)
         val command = CommandParser.parse(clean)

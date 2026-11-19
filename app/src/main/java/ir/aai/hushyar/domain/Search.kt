@@ -816,10 +816,10 @@ object InjectionGuard {
 class SearchCore(
     private val http: HttpTransport,
     private val engines: List<EngineSpec> = Engines.all,
-    private val pacing: Long = 800L,
+    private val pacing: Long = 300L,
     private val sleep: (Long) -> Unit = { ms -> try { Thread.sleep(ms) } catch (_: InterruptedException) { } },
     /** Hard cap for one [search] call, so a slow or hostile network cannot stall the agent. */
-    private val maxCallMillis: Long = 20_000L,
+    private val maxCallMillis: Long = 12_000L,
     /** Cheap engines first; this is how many we are willing to ask in one call by default. */
     private val defaultEngines: Int = 8,
     private val clock: () -> Long = { System.currentTimeMillis() }
