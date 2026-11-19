@@ -4,7 +4,7 @@
 
 ## ۱. اجرا
 
-- APK دیباگ را از صفحهٔ Actions همین مخزن (artifact با نام `hushyar-debug-apk`) بگیر و روی گوشی اندروید ۸+ نصب کن.
+- از صفحهٔ Actions همین مخزن artifact با نام `hushyar-debug-apk` را بگیر؛ شامل دو APK جداگانهٔ `armeabi-v7a` و `arm64-v8a` و `SHA256SUMS.txt` است. فایل مطابق معماری گوشی Android ۸+ را نصب کن. بسته‌ها Debug و با امضای نصب رسمی لزوماً سازگار نیستند؛ قبل از حذف نسخهٔ قبلی بکاپ معتبر بگیر.
 - یا محلی: `gradle testDebugUnitTest assembleDebug` (JDK 17، Android SDK 35).
 
 ## ۲. معرفی بازار (اجباری، چون برنامه هیچ بازاری ندارد)

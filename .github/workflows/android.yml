@@ -47,14 +47,52 @@ jobs:
       - name: Unit tests
         run: gradle --no-daemon --stacktrace testDebugUnitTest
 
-      - name: Assemble debug APK
-        run: gradle --no-daemon --stacktrace assembleDebug
+      - name: Prepare two ABI-specific APKs
+        run: |
+          version=$(sed -nE 's/^[[:space:]]*versionName = "([^"]+)".*/\1/p' app/build.gradle.kts | head -1)
+          test -n "$version"
+          echo "AAI_VERSION=$version" >> "$GITHUB_ENV"
+          mkdir -p apk-out
 
-      - name: Upload APK
+      - name: Build 32-bit APK (armeabi-v7a)
+        run: |
+          gradle --no-daemon --stacktrace -PciAbi=armeabi-v7a :app:assembleDebug
+          cp app/build/outputs/apk/debug/app-debug.apk \
+            "apk-out/Hushyar-${AAI_VERSION}-armeabi-v7a-debug.apk"
+
+      - name: Build 64-bit APK (arm64-v8a)
+        run: |
+          gradle --no-daemon --stacktrace -PciAbi=arm64-v8a :app:assembleDebug
+          cp app/build/outputs/apk/debug/app-debug.apk \
+            "apk-out/Hushyar-${AAI_VERSION}-arm64-v8a-debug.apk"
+
+      - name: Verify both APKs contain only their target ABI and native model
+        run: |
+          set -euo pipefail
+          bt=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          for abi in armeabi-v7a arm64-v8a; do
+            apk="apk-out/Hushyar-${AAI_VERSION}-${abi}-debug.apk"
+            unzip -Z1 "$apk" > apk-files.txt
+            grep -qx "lib/$abi/libhushyar_llama.so" apk-files.txt
+            if grep '^lib/' apk-files.txt | grep -v "^lib/$abi/"; then
+              echo "::error::$apk includes libraries for another ABI"; exit 1
+            fi
+            badging=$("$bt/aapt2" dump badging "$apk")
+            echo "$badging" | grep -q "versionName='${AAI_VERSION}'"
+            echo "$badging" | grep -q "native-code: '${abi}'"
+            "$bt/apksigner" verify "$apk" >/dev/null 2>&1
+            echo "$apk: $abi only, model library present, signature verified"
+          done
+          (cd apk-out && sha256sum *.apk > SHA256SUMS.txt)
+          cat apk-out/SHA256SUMS.txt
+
+      - name: Upload both APKs and checksums
         uses: actions/upload-artifact@v4
         with:
           name: hushyar-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          path: |
+            apk-out/*.apk
+            apk-out/SHA256SUMS.txt
           if-no-files-found: error
 
       - name: Upload test reports

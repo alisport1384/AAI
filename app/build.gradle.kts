@@ -4,6 +4,13 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// CI builds one ABI per APK. Without this property, local debug builds remain
+// universal for development and the existing testDebugUnitTest task is unchanged.
+val ciAbi = providers.gradleProperty("ciAbi").orNull
+require(ciAbi == null || ciAbi in setOf("armeabi-v7a", "arm64-v8a")) {
+    "ciAbi must be armeabi-v7a or arm64-v8a"
+}
+
 android {
     namespace = "ir.aai.hushyar"
     compileSdk = 35
@@ -15,6 +22,9 @@ android {
         versionCode = 23
         versionName = "0.15.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        if (ciAbi != null) {
+            ndk { abiFilters.add(ciAbi) }
+        }
     }
 
     buildTypes {
@@ -74,4 +84,9 @@ dependencies {
 tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
     maxHeapSize = "512m"
     maxParallelForks = 1
+    // Robolectric downloads its Android 14 runtime during JVM tests, outside
+    // Gradle's repository resolver. The default repo1.maven.org returned 404
+    // for .pom.sha512 in Actions, although the artifact exists on canonical
+    // Maven Central. Point Robolectric itself at the canonical endpoint.
+    systemProperty("robolectric.dependency.repo.url", "https://repo.maven.apache.org/maven2")
 }

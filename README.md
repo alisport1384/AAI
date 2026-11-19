@@ -237,9 +237,16 @@
 gradle testDebugUnitTest assembleDebug
 ```
 
-APK: `app/build/outputs/apk/debug/app-debug.apk`
+برای ساخت محلیِ دو فایل مستقل، هر APK را پیش از ساخت بعدی کپی کنید؛ Gradle نام `app-debug.apk` را بازاستفاده می‌کند:
 
-CI روی هر push همین دو کار را انجام می‌دهد و APK را به‌عنوان artifact می‌گذارد.
+```bash
+gradle -PciAbi=armeabi-v7a :app:assembleDebug
+cp app/build/outputs/apk/debug/app-debug.apk Hushyar-0.15.1-armeabi-v7a-debug.apk
+gradle -PciAbi=arm64-v8a :app:assembleDebug
+cp app/build/outputs/apk/debug/app-debug.apk Hushyar-0.15.1-arm64-v8a-debug.apk
+```
+
+بدون `ciAbi`، ساخت دیباگ محلی همچنان چندمعماری است. اکشن هر دو APK مخصوص **ARMv7 و ARM64** را جدا می‌سازد، معماری و وجود موتور محلی/امضا را در هر کدام بررسی می‌کند و همراه `SHA256SUMS.txt` در artifact `hushyar-debug-apk` می‌گذارد. هش و امضای بسته‌های اکشن را از همان اجرا بخوانید؛ امضای Debug نسخهٔ رسمی انتشار نیست.
 
 ## ساختار
 
