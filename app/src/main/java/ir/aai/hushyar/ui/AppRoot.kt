@@ -1,5 +1,6 @@
 package ir.aai.hushyar.ui
 
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -8,7 +9,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.material3.Button
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -30,7 +32,6 @@ import androidx.compose.ui.unit.dp
 import ir.aai.hushyar.AppViewModel
 import ir.aai.hushyar.core.Text as Txt
 import ir.aai.hushyar.domain.AnalysisResult
-import ir.aai.hushyar.domain.ProductGroup
 
 enum class Tab(val label: String, val icon: String) {
     Ask("پرسش", "؟"),
@@ -93,9 +94,9 @@ fun AppRoot(vm: AppViewModel) {
 // Shared helpers used across all three tabs
 @Composable
 fun ScreenColumn(content: @Composable () -> Unit) {
-    androidx.compose.foundation.layout.Column(
-        Modifier.fillMaxSize().verticalScroll(androidx.compose.foundation.rememberScrollState()).padding(16.dp),
-        verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp)
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) { content() }
 }
 
@@ -111,7 +112,7 @@ fun Body(text: String) {
 
 @Composable
 fun BulletRow(text: String) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp)) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("•", color = MaterialTheme.colorScheme.secondary)
         Text(text, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
     }
@@ -138,18 +139,40 @@ fun AnalysisScreen(analysis: AnalysisResult, onBack: () -> Unit) {
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(analysis.verdict, style = MaterialTheme.typography.titleLarge)
-                Text("امتیاز ارزش ${\"%.2f\".format(analysis.valueScore)} • برچسب قیمت: ${analysis.priceBand}", style = MaterialTheme.typography.bodyMedium)
-                analysis.priceStats?.let { stats -> Text("میانه ${Txt.num(stats.median)} • بازه ${Txt.num(stats.min)} تا ${Txt.num(stats.max)} • ${Txt.numEn(stats.count.toLong())} آگهی", style = MaterialTheme.typography.bodyMedium) } ?: Text("برای این کالا قیمت قابل اتکا ندارم.", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    "امتیاز ارزش ${"%.2f".format(analysis.valueScore)} • برچسب قیمت: ${analysis.priceBand}",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                analysis.priceStats?.let { stats ->
+                    Text(
+                        "میانه ${Txt.num(stats.median)} • بازه ${Txt.num(stats.min)} تا ${Txt.num(stats.max)} • ${Txt.numEn(stats.count.toLong())} آگهی",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                } ?: Text("برای این کالا قیمت قابل اتکا ندارم.", style = MaterialTheme.typography.bodyMedium)
             }
         }
         SectionTitle("ویژگی‌ها")
         analysis.findings.forEach { finding ->
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(finding.label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-                Text(finding.value ?: "نامعلوم", style = MaterialTheme.typography.bodyMedium, color = if (finding.value == null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface)
+                Text(
+                    finding.value ?: "نامعلوم",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (finding.value == null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
+                )
             }
         }
-        if (analysis.flags.isNotEmpty()) { SectionTitle("هشدارها"); analysis.flags.forEach { flag -> Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) { Column(Modifier.padding(12.dp)) { Text("${flag.severity} • ${flag.id}", style = MaterialTheme.typography.labelSmall); Text(flag.text, style = MaterialTheme.typography.bodyMedium) } } } }
+        if (analysis.flags.isNotEmpty()) {
+            SectionTitle("هشدارها")
+            analysis.flags.forEach { flag ->
+                Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                    Column(Modifier.padding(12.dp)) {
+                        Text("${flag.severity} • ${flag.id}", style = MaterialTheme.typography.labelSmall)
+                        Text(flag.text, style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+            }
+        }
         if (analysis.missing.isNotEmpty()) { SectionTitle("نامعلوم‌ها"); analysis.missing.forEach { BulletRow(it) } }
         if (analysis.citations.isNotEmpty()) { SectionTitle("شاهدها"); analysis.citations.forEach { citation -> Body("${citation.ref} — ${citation.label}") } }
         if (analysis.notes.isNotEmpty()) { SectionTitle("یادداشت"); analysis.notes.forEach { BulletRow(it) } }
