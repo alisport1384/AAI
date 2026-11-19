@@ -427,6 +427,6 @@ SQLite/FTS5 و TLS خودامضا: **۱۲ آزمون موفق**. `:app:testDebug
 
 `PurchaseComposerTest`، `ConversationTest`، `MaterialsTest` و `ChatDatabaseTest`
 رفتارهای قابل تکرار این بخش را پوشش می‌دهند. اجرای کامل محلی این نسخه:
-**۵۱۲ آزمون JUnit و ۱۲ آزمون Python موفق**؛ `assembleDebug` با کد نسخهٔ ۲۳ موفق.
+**۵۱۳ آزمون JUnit و ۱۲ آزمون Python موفق**؛ `assembleDebug` با کد نسخهٔ ۲۳ موفق.
 این آزمون‌ها جایگزین نصب/ارتقا، بازیابی بکاپ و بررسی واقعی قیمت فروشنده روی گوشی نیستند.
 گزارش هش/امضا و مرزها در `docs/V15-1-CONVERSATION-COMMERCE.md` است.

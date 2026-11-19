@@ -245,6 +245,8 @@ object PurchaseComposer {
             p.taxPercent?.let { "نرخ مالیاتِ اعلام‌شدهٔ شما: ${it.stripTrailingZeros().toPlainString()} درصد." },
             p.freight?.let { "حملِ اعلام‌شدهٔ شما: ${shown(it)}." },
             included?.let { "مالیات درون قیمت کالا: ${shown(it)} (اضافه نشده)." },
+            if (p.includesTax == true && p.taxPercent == null && p.wantsTax)
+                "نرخ و سهم مالیات درون قیمت نامعلوم است؛ بهای کالای شامل مالیات معلوم است ولی مبلغ مالیات جداگانه قابل تفکیک نیست." else null,
             tax?.takeIf { it > BigDecimal.ZERO }?.let { "مالیات افزوده‌شده: ${shown(it)}؛ گرد کردن تا نزدیک‌ترین ریال." },
             if (total == null) "جمع نهایی قابل‌اعلام نیست؛ لازم است: ${missing.joinToString("؛ ")}." else
                 "${if (p.freight == null) "جمع کالا با مالیات، بدون محاسبهٔ حمل" else "جمع قیمت کالا، مالیات و حمل"}: ${shown(total)}؛ برآورد است، نه فاکتور فروش."

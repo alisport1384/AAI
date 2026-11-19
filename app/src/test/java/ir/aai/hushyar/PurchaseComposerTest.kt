@@ -69,6 +69,16 @@ class PurchaseComposerTest {
         assertTrue(shippingTaxed.text.contains("۲۷۵٬۰۰۰"))
     }
 
+    @Test fun includedTaxWithoutItsRateCanSumGrossButNeverInventTheTaxPortion() {
+        val p = plan("قیمت نبشی ۴ هر کیلو ۱۰۰ هزار تومان؛ برای ۲ کیلو؛ " +
+            "قیمت شامل مالیات؛ مالیاتش چقدر است؟")
+        val a = PurchaseComposer.answer(p)
+        assertFalse(a.refused)
+        assertTrue(a.text.contains("۲۰۰٬۰۰۰"))
+        assertTrue(a.bullets.any { it.contains("مالیات درون قیمت") && it.contains("نامعلوم") })
+        assertFalse(a.bullets.any { it.contains("مالیات درون قیمت: ۰") })
+    }
+
     @Test fun twoTurnsCanCombineUserInputsOnlyWithinTheSameNamedProductAndThread() {
         val prior = turn("قیمت نبشی ۴ برای ۲ کیلو؛ قیمت بدون مالیات")
         val tax = turn("مالیات ۱۰ درصد فقط روی کالا", resolved = "قیمت نبشی ۴؛ مالیات ۱۰ درصد فقط روی کالا")

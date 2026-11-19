@@ -31,10 +31,10 @@
 
 | بررسی | نتیجه |
 | --- | --- |
-| `testDebugUnitTest` | **۵۱۲ آزمون Android/JVM، بدون شکست** |
+| `testDebugUnitTest` | **۵۱۳ آزمون Android/JVM، بدون شکست** |
 | `python3 -m unittest selfhost.test_hushyar_backend` | **۱۲ آزمون، بدون شکست** |
 | `assembleDebug` | **موفق**؛ package=`ir.aai.hushyar`، versionName=`0.15.1`، versionCode=`23`، minSdk=`26`، targetSdk=`35`، امضای APK v2 معتبر |
 
 فایل `/home/user/hushyar-0.15.1-debug.apk`، SHA-256:
-`3f94f3ade4aa4bd131bfef8ad8544beaa8fa79606ddf1b9cddaf06d81d3f5030`.
+`bd7cd0b6098cee5084b6710989da3bc50555ef855f5b65256b9dc856d548c7d5`.
 گواهی SHA-256 دیباگ آن `4c3abdcdec1a090d76f9f5b4b54155f1e384e81b58278a82bb1e7efdd393c82c` است و با APK محلی ۰٫۱۵٫۰ همین محیط یکی است؛ **با گواهی همهٔ APKهای قبلی یکسان‌بودن تضمین نشده است**. قبل از حذف هر نصب قبلی، بکاپ را بیرون از فضای خصوصی اپ بررسی کنید. اجرای آزمون JVM، اعتبار قیمت واقعی فروشنده یا نصب/ارتقای درجا روی گوشی را اثبات نمی‌کند.
