@@ -186,6 +186,9 @@ class AppViewModel(
         usingForAnswers = repos.preference(KEY_MODEL_USE) == "1"
     ))
         private set
+    /** وقتی روشن است، محاسبه و سوال مستقیم مستقیماً به مدل lokal می‌رود (بدون جستجوب وب). */
+    var directModel by mutableStateOf(repos.preference(KEY_DIRECT_MODEL) == "1")
+        private set
     var localProof by mutableStateOf<String?>(null)
         private set
 
@@ -787,6 +790,17 @@ class AppViewModel(
         }
     }
 
+    /** وقتی روشن است، محاسبه و سوال مستقیم مستقیماً به مدل lokal می‌رود (بدون جستجوب وب). */
+    fun toggleDirectModel(enabled: Boolean) {
+        repos.putPreference(KEY_DIRECT_MODEL, if (enabled) "1" else "0")
+        directModel = enabled
+        notice = if (enabled) {
+            "محاسبه و سوال مستقیم مستقیماً به مدل می‌رود (بدون جستجوب)."
+        } else {
+            "محاسبه و سوال مستقیم به جستجوب برمی‌گردد."
+        }
+    }
+
     /** Runs the model once on a harmless prompt: the only proof that it works *on this device*. */
     fun testLocalEngine() {
         val spec = localModel.spec
@@ -1069,10 +1083,26 @@ class AppViewModel(
             val result = withContext(Dispatchers.IO) {
                 runCatching {
                     val generator = if (localModel.usingForAnswers && engine.ready) engine else null
+                    // When directModel is on, skip web search/grounding and ask the local model directly.
+                    // Explicit commands (حساب کن: / از اسناد من:) still keep their own path.
+                    val directAnswer = if (directModel && PrivateRoute.calculate(text) == null &&
+                        PrivateRoute.documents(text) == null && engine.ready) {
+                        val gen = ir.aai.hushyar.domain.LocalChatter(engine, localModel.spec)
+                            .reply(text, "fa", start.history)
+                        if (gen.ok) {
+                            ir.aai.hushyar.domain.Answer(
+                                intent = "chat/direct",
+                                text = gen.text!!,
+                                confidence = 0.7,
+                                trace = listOf("مدل محلی — بدون جستجوب وب")
+                            )
+                        } else null
+                    } else null
                     // Explicit tools must not be rewritten into another product or sent to a model.
                     val resolution = if (PrivateRoute.calculate(text) != null || PrivateRoute.documents(text) != null)
                         ConversationResolution(text)
                     else ConversationContext.resolve(text, start.threadId, start.history, generator, localModel.spec)
+                        .copy(directAnswer = directAnswer ?: null)
                     val purchase = if (resolution.directAnswer == null &&
                         PrivateRoute.calculate(text) == null && PrivateRoute.documents(text) == null)
                         PurchaseComposer.plan(text, resolution.effectiveQuestion, start.threadId,
@@ -1685,6 +1715,8 @@ class AppViewModel(
         /** Preference keys: one model is remembered across restarts, plus the on/off switch. */
         const val KEY_MODEL_ID = "local_model_id"
         const val KEY_MODEL_USE = "local_model_use"
+        /** v0.13: when on, calculation / direct questions go straight to the local model (no web search). */
+        const val KEY_DIRECT_MODEL = "direct_model"
 
         /** v0.12: the backend page's own settings. */
         const val KEY_GOAL = "backend.goal"

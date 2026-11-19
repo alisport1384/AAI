@@ -821,6 +821,18 @@ internal fun ModelTab(vm: AppViewModel) {
                 }
                 Switch(checked = local.usingForAnswers, onCheckedChange = { vm.setLocalAnswers(it) })
             }
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("محاسبه و سوال مستقیم به مدل (بدون جستجوب)", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "روشن: محاسبه، سوال حقيقة و سوالات کلی مستقیماً به مدل المحلي می‌روند، بدون جستجوب وب. " +
+                            "خاموش: همان قبلاً، جستجوب اول بررسی می‌شود.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(checked = vm.directModel, onCheckedChange = { vm.toggleDirectModel(it) })
+            }
         }
         ModelPhase.MISSING -> {
             Button(onClick = { vm.downloadModel() }, modifier = Modifier.fillMaxWidth()) {
