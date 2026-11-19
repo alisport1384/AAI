@@ -249,12 +249,12 @@ object Engines {
         ),
         EngineSpec(
             "gerdoo", "گردو", "https://gerdoo.me/search/?query={q}",
-            listOf("gerdoo.me"), kind = EngineKind.PERSIAN, friction = 1,
+            listOf("gerdoo.me"), kind = EngineKind.PERSIAN, friction = 2,
             note = "موتور ایرانی گردو — فراجستجوگر روی NIN؛ HTML سرور نتیجه دارد"
         ),
         EngineSpec(
             "zarebin", "ذره‌بین", "https://zarebin.ir/search?q={q}",
-            listOf("zarebin.ir"), kind = EngineKind.PERSIAN, friction = 1,
+            listOf("zarebin.ir"), kind = EngineKind.PERSIAN, friction = 2,
             note = "موتور ایرانی ذره‌بین — ایندکس مستقل فارسی؛ سروررندر فارسی",
             fallbacks = listOf(
                 Endpoint(
