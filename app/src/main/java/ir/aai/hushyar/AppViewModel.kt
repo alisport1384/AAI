@@ -248,6 +248,7 @@ class AppViewModel(
     // the real GGUF header and the real memory numbers of this phone.
     private val engine = LocalEngine().also { e -> e.diagnosisFor = { spec, file -> modelFailureReport(spec, file) } }
     @Volatile private var downloading = false
+    val isDownloading: Boolean get() = downloading
 
     private val qa = QaEngine()
     /**
@@ -269,6 +270,13 @@ class AppViewModel(
         refreshLocal()
         reloadBackend()
         reloadChats()
+        // Auto-seed IronPin offline knowledge on first launch (idempotent)
+        if (ir.aai.hushyar.domain.IronSeed.needsSeed(repos)) {
+            viewModelScope.launch(Dispatchers.IO) {
+                runCatching { ir.aai.hushyar.domain.IronSeed.seed(repos) }
+                withContext(Dispatchers.Main) { refreshSecondary() }
+            }
+        }
     }
 
     /** Reads the backend page's settings (goal / environment / global prompt / sources / logging). */
@@ -828,6 +836,46 @@ class AppViewModel(
             localModel = localModel.copy(lastTest = localProof)
         }
     }
+
+    // ---------- IronPin offline database ----------
+    fun seedIronKnowledge() {
+        io({ ir.aai.hushyar.domain.IronSeed.seed(repos) }) { count ->
+            refreshSecondary()
+            notice = "دیتابیس آفلاین بارگذاری شد: $count نکته به دانش اضافه شد."
+        }
+    }
+    fun reseedIronKnowledge() {
+        io({ ir.aai.hushyar.domain.IronSeed.reseed(repos) }) { count ->
+            refreshSecondary()
+            notice = "دیتابیس بازنصب شد: $count نکته."
+        }
+    }
+    fun loggingSummary(): String = if (logging) "روشن — ${logLines.size} رویداد" else "خاموش"
+    fun exportLogMarkdown() {
+        io({
+            val md = ir.aai.hushyar.domain.Markdown.fullBrain(
+                items = repos.memoryAll(2000), events = repos.events(500),
+                audits = repos.auditsAll(500), packs = repos.packs(),
+                listingCount = repos.listings().size, generatedAt = System.currentTimeMillis(),
+                knowledge = repos.knowledgeAll(2000)
+            )
+            val file = store.writeLog("hushyar-log-${store.stamp()}", md)
+            repos.log("log", "user", "خروجی لاگ .md", file.name)
+            file.name to md
+        }) { (name, md) -> lastMarkdown = md; notice = "لاگ به Markdown ذخیره شد: $name" }
+    }
+    // exportModelToUri is same as saveModelToFile — kept for SettingsScreen compatibility
+    fun testModel(prompt: String) {
+        if (!engine.ready) { notice = "مدل بارگذاری نشده — اول «بارگذاری در RAM» را بزن."; return }
+        io({ engine.generate(prompt, 128) }) { gen ->
+            localProof = if (gen.ok) "تست: ${gen.text}" else "خطا: ${gen.error}"
+            localModel = localModel.copy(lastTest = localProof)
+            notice = localProof ?: ""
+        }
+    }
+    // Expose for SettingsScreen
+    val modelOptions: List<ir.aai.hushyar.domain.ModelSpec> get() = ir.aai.hushyar.domain.ModelCatalog.all
+    val localTestResult: String? get() = localProof
 
     private fun <T> io(block: () -> T, then: (T) -> Unit) {
         loading = true

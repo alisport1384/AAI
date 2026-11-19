@@ -248,6 +248,23 @@ object Engines {
                 "به‌احتمال زیاد باز است، پس یک بار امتحان می‌شود"
         ),
         EngineSpec(
+            "gerdoo", "گردو", "https://gerdoo.me/search/?query={q}",
+            listOf("gerdoo.me"), kind = EngineKind.PERSIAN, friction = 1,
+            note = "موتور ایرانی گردو — فراجستجوگر روی NIN؛ HTML سرور نتیجه دارد"
+        ),
+        EngineSpec(
+            "zarebin", "ذره‌بین", "https://zarebin.ir/search?q={q}",
+            listOf("zarebin.ir"), kind = EngineKind.PERSIAN, friction = 1,
+            note = "موتور ایرانی ذره‌بین — ایندکس مستقل فارسی؛ سروررندر فارسی",
+            fallbacks = listOf(
+                Endpoint(
+                    "https://zarebin.ir/gse/api/search/?q={q}&page=1&query_source=user",
+                    SerpFormat.JSON,
+                    "API عمومی ذره‌بین (JSON)"
+                )
+            )
+        ),
+        EngineSpec(
             "yooz", "یوز", "https://yooz.ir/search/?q={q}",
             listOf("yooz.ir"), kind = EngineKind.PERSIAN, friction = 3,
             note = "موتور ایرانی؛ از این شبکه DNS پاسخ نداد (سنجیده‌شده)"
