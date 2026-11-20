@@ -51,7 +51,7 @@ class ChatDatabaseTest {
             old.version = 5
         }
         val db = newDb()
-        assertEquals(6, db.writableDatabase.version)
+        assertEquals(7, db.writableDatabase.version)
         db.readableDatabase.rawQuery("SELECT body FROM memory WHERE id='old'", null).use { c ->
             assertTrue(c.moveToFirst())
             assertEquals("دادهٔ قبلی", c.getString(0))
