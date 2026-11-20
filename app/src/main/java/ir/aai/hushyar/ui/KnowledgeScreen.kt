@@ -28,6 +28,8 @@ import androidx.compose.ui.platform.LocalContext
 import ir.aai.hushyar.AppViewModel
 import ir.aai.hushyar.core.Text as Txt
 import ir.aai.hushyar.domain.IronKnowledge
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * تب دانش: فقط محل نگهداری اطلاعات. نیازی به دیدن همهٔ ردیف‌ها نیست.
@@ -69,16 +71,31 @@ fun KnowledgeScreen(vm: AppViewModel) {
 
         // اسکنر آنلاین Qwen — دقیقِ روش Qwen، هر ۲۴ ساعت به‌روز
         val ctx = LocalContext.current
+        var qwenVerify by remember { mutableStateOf<String?>(null) }
+        var qwenStatus by remember { mutableStateOf("در حال بارگذاری…") }
+        LaunchedEffect(Unit) {
+            val v = withContext(Dispatchers.IO) { runCatching { vm.qwenVerifyFromBundle(ctx) }.getOrDefault("—") }
+            val s = withContext(Dispatchers.IO) { runCatching { vm.qwenSyncStatus() }.getOrDefault("—") }
+            qwenVerify = v
+            qwenStatus = s
+        }
         Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("اسکنر آنلاین — دانشِ قیمتِ روز (Qwen)", style = MaterialTheme.typography.titleSmall)
                 Text("۲ موضوعِ اسکن‌شده: قیمت میلگرد (۱۴۳ نکته) + قیمت تیرآهن (۹۹ نکته) = ۲۴۲ نکته. چانک ۹۰۰/۱۴۰، روش lexical-scoredِ Qwen — دقیقاً همانِ QwenRag اپ.", style = MaterialTheme.typography.bodySmall)
-                Text(vm.qwenSyncStatus(), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text("بررسی متد: ${vm.qwenVerifyFromBundle(ctx)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(qwenStatus, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("بررسی متد: ${qwenVerify ?: "در حال بررسی…"}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text("منبع: https://qwen.alisport0.qzz.io/report/batch/bb9e0626-ef04-4c81-a715-d494045b7a77 — اپ هر ۲۴ ساعت خودکار به‌روز می‌کند (JobScheduler، بدون مجوز اضافه).", style = MaterialTheme.typography.labelSmall)
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { vm.syncQwenNow(ctx) }, modifier = Modifier.weight(1f), enabled = !vm.loading) { Text("همگام‌سازی اکنون") }
-                    OutlinedButton(onClick = { vm.syncQwenFromAssets(ctx) }, modifier = Modifier.weight(1f), enabled = !vm.loading) { Text("از باندل آفلاین") }
+                    Button(onClick = {
+                        vm.syncQwenNow(ctx)
+                        // وضعیت را بعدِ همگام‌سازی تازه کن
+                        qwenStatus = vm.qwenSyncStatus()
+                    }, modifier = Modifier.weight(1f), enabled = !vm.loading) { Text("همگام‌سازی اکنون") }
+                    OutlinedButton(onClick = {
+                        vm.syncQwenFromAssets(ctx)
+                        qwenStatus = vm.qwenSyncStatus()
+                    }, modifier = Modifier.weight(1f), enabled = !vm.loading) { Text("از باندل آفلاین") }
                 }
                 Text("دانشِ خودِ اپ دست‌نخورده می‌ماند؛ این دانش دقیقاً اضافه و هر ۲۴ ساعت نوسازی می‌شود.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
