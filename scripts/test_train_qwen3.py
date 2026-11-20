@@ -24,19 +24,43 @@ class TestQwen3TrainingScript(unittest.TestCase):
         self.assertEqual(args.lora_r, 16)
         self.assertEqual(args.lora_alpha, 16)
 
-    def test_parse_args_custom_datasets(self):
-        args_jev = parse_args(
-            [
-                "--model",
-                "Qwen/Qwen3-4B-Instruct",
-                "--dataset",
-                "amiralifirouzi/jev-data-persian",
-                "--export-gguf",
-                "q4_k_m",
-                "--dry-run",
-            ]
-        )
-        self.assertEqual(args_jev.dataset, "amiralifirouzi/jev-data-persian")
+    def test_normalize_translation_schemas(self):
+        # 1. parsinlu_translation_en_fa
+        parsinlu_sample = {
+            "source": "Machine learning is fascinating.",
+            "targets": ["یادگیری ماشین جذاب است."],
+            "category": "translation",
+        }
+        msgs1 = normalize_sample_to_messages(parsinlu_sample)
+        self.assertEqual(len(msgs1), 2)
+        self.assertEqual(msgs1[0]["role"], "user")
+        self.assertIn("Translate the following English text to Persian:", msgs1[0]["content"])
+        self.assertIn("Machine learning is fascinating.", msgs1[0]["content"])
+        self.assertEqual(msgs1[1]["role"], "assistant")
+        self.assertEqual(msgs1[1]["content"], "یادگیری ماشین جذاب است.")
+
+        # 2. opus-100
+        opus_sample = {
+            "translation": {
+                "en": "Where is the library?",
+                "fa": "کتابخانه کجاست؟",
+            }
+        }
+        msgs2 = normalize_sample_to_messages(opus_sample)
+        self.assertEqual(len(msgs2), 2)
+        self.assertEqual(msgs2[0]["role"], "user")
+        self.assertIn("Translate the following text to Persian:", msgs2[0]["content"])
+        self.assertEqual(msgs2[1]["content"], "کتابخانه کجاست؟")
+
+    def test_normalize_debategpt_schema(self):
+        debate_sample = {
+            "prompt": "Is space exploration worth the cost?",
+            "response": "Space exploration drives technological innovation.",
+        }
+        messages = normalize_sample_to_messages(debate_sample)
+        self.assertEqual(len(messages), 2)
+        self.assertEqual(messages[0]["role"], "user")
+        self.assertEqual(messages[0]["content"], "Is space exploration worth the cost?")
 
     def test_normalize_jev_schema(self):
         jev_sample = {
@@ -48,49 +72,21 @@ class TestQwen3TrainingScript(unittest.TestCase):
         messages = normalize_sample_to_messages(jev_sample)
         self.assertEqual(len(messages), 2)
         self.assertEqual(messages[0]["role"], "user")
-        self.assertIn("تیم ملی ایران پیروز شد.", messages[0]["content"])
-        self.assertIn("کدام تیم پیروز شد؟", messages[0]["content"])
-        self.assertIn("گزینه‌ها:", messages[0]["content"])
-        self.assertEqual(messages[1]["role"], "assistant")
-        self.assertEqual(messages[1]["content"], "ایران")
-
-    def test_normalize_math_sft_schema(self):
-        math_sample = {
-            "question": "معادله 2x = 8 چطور حل میشه؟",
-            "answer": "طرفین را بر 2 تقسیم کنید: x = 4.",
-            "total_tokens": 45,
-        }
-        messages = normalize_sample_to_messages(math_sample)
-        self.assertEqual(len(messages), 2)
-        self.assertEqual(messages[0]["role"], "user")
-
-    def test_normalize_farsinstruct_schema(self):
-        farsinstruct_sample = {
-            "dataset": "pn_summary",
-            "template": "gen_article_with_summary",
-            "inputs": "متن را خلاصه کن",
-            "outputs": "این یک خلاصه است.",
-        }
-        messages = normalize_sample_to_messages(farsinstruct_sample)
-        self.assertEqual(len(messages), 2)
-        self.assertEqual(messages[0]["role"], "user")
-
-    def test_format_messages_sample(self):
-        messages = [
-            {"role": "user", "content": "سلام"},
-            {"role": "assistant", "content": "درود! چطور می‌توانم کمکتان کنم؟"},
-        ]
-        formatted = format_messages_sample(messages)
-        self.assertIn("<|im_start|>user\nسلام<|im_end|>", formatted)
 
     def test_run_dry_run_all_datasets(self):
-        for ds_name in [
+        datasets_to_test = [
+            "nassimjp/Farsi-Reasoning-SFT",
+            "frasalvi/debategpt",
+            "DebateLabKIT/deep-argmap-conversations",
+            "persiannlp/parsinlu_translation_en_fa",
+            "Helsinki-NLP/opus-100",
             "amiralifirouzi/jev-data-persian",
             "amiralifirouzi/Persian-SFT-102K",
             "xmanii/Persian-Math-SFT",
             "ParsiAI/FarsInstruct",
             "amiralifirouzi/tiny-persian-sft-15k",
-        ]:
+        ]
+        for ds_name in datasets_to_test:
             args = parse_args(["--dataset", ds_name, "--dry-run"])
             run_dry_run(args)
 

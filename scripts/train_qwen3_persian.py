@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """
-train_qwen3_persian.py — Fine-tune Qwen 3 / Qwen 2.5 models on Persian SFT & Instruct datasets.
+train_qwen3_persian.py — Fine-tune Qwen 3 / Qwen 2.5 models on Persian & Multilingual Datasets.
 
 Supported Datasets:
- - amiralifirouzi/jev-data-persian (119k rows, Persian JEV benchmark & reasoning dataset)
- - amiralifirouzi/Persian-SFT-102K (102k master dataset, ChatML 'messages' format)
- - xmanii/Persian-Math-SFT (Persian Math SFT, 'messages' or 'question'/'answer')
- - ParsiAI/FarsInstruct (22.7M rows, 'inputs' and 'outputs' format)
- - amiralifirouzi/tiny-persian-sft-15k (ChatML 'messages' format)
- - Standard Alpaca / Instruction datasets ('instruction', 'input', 'output' format)
+ - nassimjp/Farsi-Reasoning-SFT (Farsi step-by-step reasoning with <think> traces)
+ - frasalvi/debategpt (Conversational debate & persuasion dialogues)
+ - DebateLabKIT/deep-argmap-conversations (604k structured argument mapping conversations)
+ - persiannlp/parsinlu_translation_en_fa (1.67M English to Persian translation pairs)
+ - Helsinki-NLP/opus-100 (1M English-Persian parallel translation corpus)
+ - amiralifirouzi/jev-data-persian (119k rows, Persian JEV benchmark)
+ - amiralifirouzi/Persian-SFT-102K (102k master dataset, ChatML format)
+ - xmanii/Persian-Math-SFT (Persian Math SFT)
+ - ParsiAI/FarsInstruct (22.7M rows, instruction dataset)
+ - amiralifirouzi/tiny-persian-sft-15k (15k ChatML format)
  - Any local JSON / JSONL files
 
 Target Models:
@@ -18,9 +22,9 @@ Target Models:
  - unsloth/Qwen2.5-1.5B-Instruct
 
 Features:
- - Automatic schema normalization: seamlessly handles 'messages', 'question_fa'/'answer_fa', 'inputs'/'outputs', 'question'/'answer', and 'instruction'/'output'.
- - Configurable dataset subsets (e.g. 'default', 'fa', 'fa_replay', 'pn_sum', 'persian_qa', etc.).
- - Max samples capping (--max-samples) for efficient training on massive datasets.
+ - Automatic schema normalization: seamlessly handles 'messages', 'translation', 'source'/'targets', 'inputs'/'outputs', 'question_fa'/'answer_fa', 'question'/'answer', and 'instruction'/'output'.
+ - Configurable dataset subsets (e.g. 'en-fa' for opus-100; 'fa', 'fa_replay' for Persian-SFT-102K; 'default', 'pn_sum' for FarsInstruct).
+ - Max samples capping (--max-samples) for efficient training on massive multi-million datasets.
  - Official Qwen ChatML template formatting (<|im_start|>role\ncontent<|im_end|>).
  - Loss masking on user instructions (train_on_responses_only).
  - Fast Unsloth QLoRA 4-bit / 16-bit LoRA fine-tuning.
@@ -28,16 +32,21 @@ Features:
  - Dry-run verification mode.
 
 Usage:
-  # Fast dry-run check on jev-data-persian:
-  python3 scripts/train_qwen3_persian.py --dataset amiralifirouzi/jev-data-persian --dry-run
+  # Fast dry-run check on Farsi-Reasoning-SFT:
+  python3 scripts/train_qwen3_persian.py --dataset nassimjp/Farsi-Reasoning-SFT --dry-run
 
-  # Full Fine-tuning on jev-data-persian with max 50,000 samples:
+  # Fast dry-run check on parsinlu_translation_en_fa:
+  python3 scripts/train_qwen3_persian.py --dataset persiannlp/parsinlu_translation_en_fa --dry-run
+
+  # Fast dry-run check on opus-100 (en-fa):
+  python3 scripts/train_qwen3_persian.py --dataset Helsinki-NLP/opus-100 --dataset-config en-fa --dry-run
+
+  # Full Fine-tuning on Farsi-Reasoning-SFT:
   python3 scripts/train_qwen3_persian.py \
       --model Qwen/Qwen2.5-0.5B-Instruct \
-      --dataset amiralifirouzi/jev-data-persian \
-      --max-samples 50000 \
-      --output-dir ./qwen3-jev-lora \
-      --epochs 1 \
+      --dataset nassimjp/Farsi-Reasoning-SFT \
+      --output-dir ./qwen3-reasoning-lora \
+      --epochs 2 \
       --export-gguf q4_k_m
 """
 
@@ -50,7 +59,7 @@ from pathlib import Path
 
 def parse_args(args=None):
     parser = argparse.ArgumentParser(
-        description="Fine-tune Qwen 3 / Qwen 2.5 on Persian Datasets (jev-data-persian, Persian-SFT-102K, Persian-Math-SFT, FarsInstruct, tiny-persian-sft-15k)"
+        description="Fine-tune Qwen 3 / Qwen 2.5 on Persian & Multilingual Datasets (Farsi-Reasoning-SFT, debategpt, deep-argmap-conversations, parsinlu_translation_en_fa, opus-100, etc.)"
     )
     parser.add_argument(
         "--model",
@@ -62,13 +71,13 @@ def parse_args(args=None):
         "--dataset",
         type=str,
         default="amiralifirouzi/tiny-persian-sft-15k",
-        help="Hugging Face dataset identifier (e.g. amiralifirouzi/jev-data-persian, amiralifirouzi/Persian-SFT-102K, xmanii/Persian-Math-SFT, ParsiAI/FarsInstruct, amiralifirouzi/tiny-persian-sft-15k) or local json/jsonl file path",
+        help="Hugging Face dataset identifier or local json/jsonl file path",
     )
     parser.add_argument(
         "--dataset-config",
         type=str,
         default="default",
-        help="Dataset configuration split subset ('default', 'fa', 'fa_replay', 'pn_sum', 'persian_qa', etc.)",
+        help="Dataset configuration split subset ('default', 'en-fa', 'fa', 'fa_replay', 'pn_sum', etc.)",
     )
     parser.add_argument(
         "--max-samples",
@@ -147,17 +156,44 @@ def parse_args(args=None):
 
 def normalize_sample_to_messages(sample):
     """
-    Normalizes different dataset schemas (messages, question_fa/answer_fa, inputs/outputs, question/answer, instruction/output)
+    Normalizes different dataset schemas (messages, translation, source/targets, inputs/outputs, question_fa/answer_fa, question/answer, instruction/output)
     to a unified OpenAI ChatML messages list format.
     """
     if not isinstance(sample, dict):
         return []
 
-    # 1. Format: 'messages' column (tiny-persian-sft-15k, Persian-SFT-102K, Persian-Math-SFT)
+    # 1. Format: 'messages' column (tiny-persian-sft-15k, Persian-SFT-102K, Farsi-Reasoning-SFT, deep-argmap-conversations, Persian-Math-SFT)
     if "messages" in sample and isinstance(sample["messages"], list) and len(sample["messages"]) > 0:
         return sample["messages"]
 
-    # 2. Format: 'question_fa' and 'answer_fa' columns (amiralifirouzi/jev-data-persian)
+    # 2. Format: 'translation' dict (Helsinki-NLP/opus-100 format: {'en': '...', 'fa': '...'})
+    if "translation" in sample and isinstance(sample["translation"], dict):
+        trans = sample["translation"]
+        en_text = str(trans.get("en") or trans.get("source") or "").strip()
+        fa_text = str(trans.get("fa") or trans.get("target") or "").strip()
+        if en_text and fa_text:
+            return [
+                {"role": "user", "content": f"Translate the following text to Persian:\n{en_text}"},
+                {"role": "assistant", "content": fa_text},
+            ]
+
+    # 3. Format: 'source' and 'targets' columns (persiannlp/parsinlu_translation_en_fa format)
+    if "source" in sample and ("targets" in sample or "target" in sample):
+        src = str(sample["source"] or "").strip()
+        targets = sample.get("targets") or sample.get("target")
+        tgt = ""
+        if isinstance(targets, list) and len(targets) > 0:
+            tgt = str(targets[0]).strip()
+        elif isinstance(targets, str):
+            tgt = targets.strip()
+
+        if src and tgt:
+            return [
+                {"role": "user", "content": f"Translate the following English text to Persian:\n{src}"},
+                {"role": "assistant", "content": tgt},
+            ]
+
+    # 4. Format: 'question_fa' and 'answer_fa' columns (amiralifirouzi/jev-data-persian)
     if ("question_fa" in sample or "question" in sample) and ("answer_fa" in sample or "answer" in sample):
         q = str(sample.get("question_fa") or sample.get("question") or "").strip()
         a = str(sample.get("answer_fa") or sample.get("answer") or "").strip()
@@ -181,7 +217,7 @@ def normalize_sample_to_messages(sample):
                 {"role": "assistant", "content": a},
             ]
 
-    # 3. Format: 'inputs' and 'outputs' columns (ParsiAI/FarsInstruct)
+    # 5. Format: 'inputs' and 'outputs' columns (ParsiAI/FarsInstruct)
     if "inputs" in sample and "outputs" in sample:
         inp = str(sample["inputs"] or "").strip()
         out = str(sample["outputs"] or "").strip()
@@ -191,7 +227,17 @@ def normalize_sample_to_messages(sample):
                 {"role": "assistant", "content": out},
             ]
 
-    # 4. Format: 'question' and 'answer' columns (Persian-Math-SFT fallback)
+    # 6. Format: 'prompt'/'response' or 'text'/'reply' columns (frasalvi/debategpt)
+    if ("prompt" in sample or "text" in sample) and ("response" in sample or "reply" in sample):
+        p = str(sample.get("prompt") or sample.get("text") or "").strip()
+        r = str(sample.get("response") or sample.get("reply") or "").strip()
+        if p and r:
+            return [
+                {"role": "user", "content": p},
+                {"role": "assistant", "content": r},
+            ]
+
+    # 7. Format: 'question' and 'answer' columns (Persian-Math-SFT fallback)
     if "question" in sample and "answer" in sample:
         q = str(sample["question"] or "").strip()
         a = str(sample["answer"] or "").strip()
@@ -201,7 +247,7 @@ def normalize_sample_to_messages(sample):
                 {"role": "assistant", "content": a},
             ]
 
-    # 5. Format: 'instruction', 'input', 'output' columns (Alpaca / standard instruction)
+    # 8. Format: 'instruction', 'input', 'output' columns (Alpaca / standard instruction)
     if "instruction" in sample or "output" in sample:
         instruction = str(sample.get("instruction") or "").strip()
         inp_extra = str(sample.get("input") or "").strip()
@@ -218,7 +264,7 @@ def normalize_sample_to_messages(sample):
 
 def load_persian_dataset(dataset_name_or_path: str, config: str, max_samples: int = None):
     """
-    Loads Persian datasets (e.g. amiralifirouzi/jev-data-persian, amiralifirouzi/Persian-SFT-102K, xmanii/Persian-Math-SFT, ParsiAI/FarsInstruct, amiralifirouzi/tiny-persian-sft-15k, or local files).
+    Loads Persian & Multilingual datasets.
     """
     if os.path.exists(dataset_name_or_path):
         print(f"==> Loading local dataset file: {dataset_name_or_path}")
@@ -235,9 +281,11 @@ def load_persian_dataset(dataset_name_or_path: str, config: str, max_samples: in
         from datasets import load_dataset, concatenate_datasets
         print(f"==> Loading HuggingFace dataset: {dataset_name_or_path} (config={config})")
 
-        # Config handling
+        # Config handling for specific datasets
         cfg = None if config in ("default", "all", "none") else config
-        if dataset_name_or_path in ("amiralifirouzi/tiny-persian-sft-15k", "amiralifirouzi/Persian-SFT-102K") and config == "default":
+        if dataset_name_or_path == "Helsinki-NLP/opus-100" and config == "default":
+            cfg = "en-fa"
+        elif dataset_name_or_path in ("amiralifirouzi/tiny-persian-sft-15k", "amiralifirouzi/Persian-SFT-102K") and config == "default":
             cfg = "fa"
 
         if config == "all" and dataset_name_or_path in ("amiralifirouzi/tiny-persian-sft-15k", "amiralifirouzi/Persian-SFT-102K"):
@@ -255,7 +303,49 @@ def load_persian_dataset(dataset_name_or_path: str, config: str, max_samples: in
     except ImportError:
         print("! 'datasets' package not installed; generating synthetic preview sample for verification...")
         ds_lower = dataset_name_or_path.lower()
-        if "jev" in ds_lower:
+        if "reasoning" in ds_lower:
+            return [
+                {
+                    "messages": [
+                        {"role": "user", "content": "اگر ۳ سیب داشته باشیم و ۲ سیب اضافه کنیم، چند سیب داریم؟"},
+                        {"role": "assistant", "content": "<think>\nمحاسبه مجموع: 3 + 2 = 5\n</think>\nمجموعاً ۵ سیب داریم."}
+                    ]
+                }
+            ]
+        elif "debategpt" in ds_lower:
+            return [
+                {
+                    "prompt": "Should standardized tests be abolished in schools?",
+                    "response": "Standardized testing provides a unified metric, but critics argue it limits creative assessment."
+                }
+            ]
+        elif "argmap" in ds_lower:
+            return [
+                {
+                    "messages": [
+                        {"role": "user", "content": "Construct an argument map for renewable energy adoption."},
+                        {"role": "assistant", "content": "1. Renewable energy reduces carbon emissions.\n2. High upfront costs require initial subsidies."}
+                    ]
+                }
+            ]
+        elif "parsinlu_translation" in ds_lower or "parsinlu" in ds_lower:
+            return [
+                {
+                    "source": "Artificial intelligence is reshaping the modern world.",
+                    "targets": ["هوش مصنوعی در حال بازشکل‌دهی جهان مدرن است."],
+                    "category": "translation"
+                }
+            ]
+        elif "opus-100" in ds_lower or "opus" in ds_lower:
+            return [
+                {
+                    "translation": {
+                        "en": "Knowledge is power.",
+                        "fa": "توانا بود هر که دانا بود."
+                    }
+                }
+            ]
+        elif "jev" in ds_lower:
             return [
                 {
                     "id": "jev-fa-00001",
