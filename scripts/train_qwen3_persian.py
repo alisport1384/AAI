@@ -4,6 +4,8 @@ train_qwen3_persian.py — Fine-tune Qwen 3 / Qwen 2.5 models on Persian SFT & I
 
 Supported Datasets:
  - amiralifirouzi/tiny-persian-sft-15k (ChatML 'messages' format)
+ - amiralifirouzi/Persian-SFT-102K (ChatML 'messages' format, 102k master dataset)
+ - xmanii/Persian-Math-SFT (Persian Math SFT, 'messages' or 'question'/'answer')
  - ParsiAI/FarsInstruct ('inputs' and 'outputs' format)
  - Standard Alpaca / Instruction datasets ('instruction', 'input', 'output' format)
  - Any local JSON / JSONL files
@@ -15,9 +17,9 @@ Target Models:
  - unsloth/Qwen2.5-1.5B-Instruct
 
 Features:
- - Automatic schema normalization: seamlessly handles 'messages', 'inputs'/'outputs', and 'instruction'/'output'.
- - Configurable dataset subsets (e.g. 'fa', 'fa_replay' for tiny-persian-sft-15k; 'default', 'pn_sum', 'persian_qa' for FarsInstruct).
- - Max samples capping (--max-samples) for efficient training on massive multi-million datasets like FarsInstruct.
+ - Automatic schema normalization: seamlessly handles 'messages', 'inputs'/'outputs', 'question'/'answer', and 'instruction'/'output'.
+ - Configurable dataset subsets (e.g. 'fa', 'fa_replay' for Persian-SFT-102K and tiny-persian-sft-15k; 'default', 'pn_sum', 'persian_qa' for FarsInstruct).
+ - Max samples capping (--max-samples) for efficient training on massive datasets.
  - Official Qwen ChatML template formatting (<|im_start|>role\ncontent<|im_end|>).
  - Loss masking on user instructions (train_on_responses_only).
  - Fast Unsloth QLoRA 4-bit / 16-bit LoRA fine-tuning.
@@ -25,16 +27,17 @@ Features:
  - Dry-run verification mode.
 
 Usage:
-  # Fast dry-run check on FarsInstruct:
-  python3 scripts/train_qwen3_persian.py --dataset ParsiAI/FarsInstruct --dry-run
+  # Fast dry-run check on Persian-SFT-102K:
+  python3 scripts/train_qwen3_persian.py --dataset amiralifirouzi/Persian-SFT-102K --dry-run
 
-  # Full Fine-tuning on FarsInstruct with max 50,000 samples:
+  # Fast dry-run check on Persian-Math-SFT:
+  python3 scripts/train_qwen3_persian.py --dataset xmanii/Persian-Math-SFT --dry-run
+
+  # Full Fine-tuning on Persian-Math-SFT:
   python3 scripts/train_qwen3_persian.py \
       --model Qwen/Qwen2.5-0.5B-Instruct \
-      --dataset ParsiAI/FarsInstruct \
-      --dataset-config default \
-      --max-samples 50000 \
-      --output-dir ./qwen3-farsinstruct-lora \
+      --dataset xmanii/Persian-Math-SFT \
+      --output-dir ./qwen3-math-lora \
       --epochs 1 \
       --export-gguf q4_k_m
 """
@@ -48,7 +51,7 @@ from pathlib import Path
 
 def parse_args(args=None):
     parser = argparse.ArgumentParser(
-        description="Fine-tune Qwen 3 / Qwen 2.5 on Persian Datasets (tiny-persian-sft-15k, FarsInstruct, etc.)"
+        description="Fine-tune Qwen 3 / Qwen 2.5 on Persian Datasets (Persian-SFT-102K, Persian-Math-SFT, FarsInstruct, tiny-persian-sft-15k)"
     )
     parser.add_argument(
         "--model",
@@ -60,19 +63,19 @@ def parse_args(args=None):
         "--dataset",
         type=str,
         default="amiralifirouzi/tiny-persian-sft-15k",
-        help="Hugging Face dataset identifier (e.g. ParsiAI/FarsInstruct, amiralifirouzi/tiny-persian-sft-15k) or local json/jsonl file path",
+        help="Hugging Face dataset identifier (e.g. amiralifirouzi/Persian-SFT-102K, xmanii/Persian-Math-SFT, ParsiAI/FarsInstruct, amiralifirouzi/tiny-persian-sft-15k) or local json/jsonl file path",
     )
     parser.add_argument(
         "--dataset-config",
         type=str,
         default="default",
-        help="Dataset configuration split subset ('default', 'fa', 'pn_sum', 'persian_qa', etc.)",
+        help="Dataset configuration split subset ('default', 'fa', 'fa_replay', 'pn_sum', 'persian_qa', etc.)",
     )
     parser.add_argument(
         "--max-samples",
         type=int,
         default=None,
-        help="Maximum number of dataset samples to use for training (useful for massive datasets like FarsInstruct)",
+        help="Maximum number of dataset samples to use for training (useful for massive datasets)",
     )
     parser.add_argument(
         "--max-seq-length",
@@ -145,14 +148,14 @@ def parse_args(args=None):
 
 def normalize_sample_to_messages(sample):
     """
-    Normalizes different dataset schemas (messages, inputs/outputs, instruction/output)
+    Normalizes different dataset schemas (messages, inputs/outputs, question/answer, instruction/output)
     to a unified OpenAI ChatML messages list format.
     """
     if not isinstance(sample, dict):
         return []
 
-    # 1. Format: 'messages' column (tiny-persian-sft-15k)
-    if "messages" in sample and isinstance(sample["messages"], list):
+    # 1. Format: 'messages' column (tiny-persian-sft-15k, Persian-SFT-102K, Persian-Math-SFT)
+    if "messages" in sample and isinstance(sample["messages"], list) and len(sample["messages"]) > 0:
         return sample["messages"]
 
     # 2. Format: 'inputs' and 'outputs' columns (ParsiAI/FarsInstruct)
@@ -165,7 +168,17 @@ def normalize_sample_to_messages(sample):
                 {"role": "assistant", "content": out},
             ]
 
-    # 3. Format: 'instruction', 'input', 'output' columns (Alpaca / standard instruction)
+    # 3. Format: 'question' and 'answer' columns (Persian-Math-SFT fallback)
+    if "question" in sample and "answer" in sample:
+        q = str(sample["question"] or "").strip()
+        a = str(sample["answer"] or "").strip()
+        if q and a:
+            return [
+                {"role": "user", "content": q},
+                {"role": "assistant", "content": a},
+            ]
+
+    # 4. Format: 'instruction', 'input', 'output' columns (Alpaca / standard instruction)
     if "instruction" in sample or "output" in sample:
         instruction = str(sample.get("instruction") or "").strip()
         inp_extra = str(sample.get("input") or "").strip()
@@ -182,7 +195,7 @@ def normalize_sample_to_messages(sample):
 
 def load_persian_dataset(dataset_name_or_path: str, config: str, max_samples: int = None):
     """
-    Loads Persian datasets (e.g. ParsiAI/FarsInstruct, amiralifirouzi/tiny-persian-sft-15k, or local files).
+    Loads Persian datasets (e.g. amiralifirouzi/Persian-SFT-102K, xmanii/Persian-Math-SFT, ParsiAI/FarsInstruct, amiralifirouzi/tiny-persian-sft-15k, or local files).
     """
     if os.path.exists(dataset_name_or_path):
         print(f"==> Loading local dataset file: {dataset_name_or_path}")
@@ -201,10 +214,10 @@ def load_persian_dataset(dataset_name_or_path: str, config: str, max_samples: in
 
         # Config handling
         cfg = None if config in ("default", "all", "none") else config
-        if dataset_name_or_path == "amiralifirouzi/tiny-persian-sft-15k" and config == "default":
+        if dataset_name_or_path in ("amiralifirouzi/tiny-persian-sft-15k", "amiralifirouzi/Persian-SFT-102K") and config == "default":
             cfg = "fa"
 
-        if config == "all" and dataset_name_or_path == "amiralifirouzi/tiny-persian-sft-15k":
+        if config == "all" and dataset_name_or_path in ("amiralifirouzi/tiny-persian-sft-15k", "amiralifirouzi/Persian-SFT-102K"):
             ds_fa = load_dataset(dataset_name_or_path, "fa", split="train")
             ds_replay = load_dataset(dataset_name_or_path, "fa_replay", split="train")
             ds = concatenate_datasets([ds_fa, ds_replay])
@@ -218,19 +231,38 @@ def load_persian_dataset(dataset_name_or_path: str, config: str, max_samples: in
         return ds
     except ImportError:
         print("! 'datasets' package not installed; generating synthetic preview sample for verification...")
-        if "FarsInstruct" in dataset_name_or_path or "farsinstruct" in dataset_name_or_path.lower():
+        ds_lower = dataset_name_or_path.lower()
+        if "math" in ds_lower:
+            return [
+                {
+                    "question": "چطور می‌تونم معادله x + 3 = 7 رو حل کنم؟",
+                    "answer": "برای حل معادله x + 3 = 7، عدد 3 را به سمت دیگر معادله ببرید: x = 7 - 3 بنابراین x = 4.",
+                    "total_tokens": 310,
+                    "messages": [
+                        {"role": "user", "content": "چطور می‌تونم معادله x + 3 = 7 رو حل کنم؟"},
+                        {"role": "assistant", "content": "برای حل معادله x + 3 = 7، عدد 3 را به سمت دیگر معادله ببرید: x = 7 - 3 بنابراین x = 4."}
+                    ]
+                }
+            ]
+        elif "102k" in ds_lower:
+            return [
+                {
+                    "id": "master-102k-00001",
+                    "source": "persian-sft-master",
+                    "task": "reasoning",
+                    "messages": [
+                        {"role": "user", "content": "مراحل تحلیل یک پروژه استخراج داده به زبان ساده چیست؟"},
+                        {"role": "assistant", "content": "تحلیل استخراج داده شامل ۴ مرحله اصلی است: ۱. تعریف مسئله ۲. جمع‌آوری ۳. پالایش داده ۴. مدل‌سازی."}
+                    ]
+                }
+            ]
+        elif "farsinstruct" in ds_lower:
             return [
                 {
                     "dataset": "pn_summary",
                     "template": "gen_article_with_summary",
                     "inputs": "خلاصه داده شده را با دقت مطالعه کن و آن را در قالب یک مقاله کامل بسط بده",
                     "outputs": "فریده روشن در گفت وگو با خبرنگار ایمنا با اشاره به دستاوردهای نشست..."
-                },
-                {
-                    "dataset": "parsinlu_translation_en_fa",
-                    "template": "which_farsi_english",
-                    "inputs": "این متن به کدامیک از زبان های فارسی یا انگلیسی نوشته شده است؟ متن: می بینی که. زبان متن:",
-                    "outputs": "فارسی"
                 }
             ]
         else:
