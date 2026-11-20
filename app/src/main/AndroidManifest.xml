@@ -22,6 +22,12 @@
             android:exported="false"
             android:permission="android.permission.BIND_JOB_SERVICE" />
 
+        <!-- همگام‌سازی ۲۴ساعته دانش اسکنر Qwen — دانشِ خودِ اپ باقی می‌ماند، این اضافه و هر ۲۴ ساعت به‌روز می‌شود -->
+        <service
+            android:name=".data.QwenSyncService"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"

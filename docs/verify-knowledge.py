@@ -96,8 +96,50 @@ assert_true("StudyOutcome" in ds, "StudyOutcome with coverage/gaps/engines/failu
 assert_true("StudyBudget" in ds, "StudyBudget quick/balanced/deep")
 assert_true("store(item)" in ds or "store(rag" in ds or "store(single" in ds, "DeepStudy store() dual-write")
 
+# 9. QwenSync — اسکنر آنلاین: دقیقِ روش Qwen + هر ۲۴ ساعت
+qs = read("app/src/main/java/ir/aai/hushyar/domain/QwenSync.kt")
+assert_true(len(qs) > 800, "QwenSync.kt exists")
+assert_true("DEFAULT_BATCH_URL" in qs, "QwenSync batch URL")
+assert_true("bb9e0626-ef04-4c81-a715-d494045b7a77" in qs, "QwenSync batch id bb9e0626")
+assert_true("SYNC_PERIOD_MS" in qs and "24 * 60 * 60 * 1000" in qs, "QwenSync 24h period")
+assert_true("fun verify(" in qs, "QwenSync.verify()")
+assert_true("fun toKnowledgeItem(" in qs, "QwenSync.toKnowledgeItem()")
+assert_true("fun importJson(" in qs, "QwenSync.importJson()")
+assert_true("fun fetchAndImport(" in qs, "QwenSync.fetchAndImport()")
+assert_true("PREF_SEEDED_QWEN" in qs, "QwenSync seeded pref")
+assert_true("TARGET_CHARS" in qs or "900" in qs, "QwenSync chunker check")
+assert_true("qwen-sync" in qs, "QwenSync tags")
+
+qsvc = read("app/src/main/java/ir/aai/hushyar/data/QwenSyncService.kt")
+assert_true("JOB_ID = 4712" in qsvc, "QwenSyncService JOB_ID 4712")
+assert_true("SYNC_PERIOD_MS" in qsvc or "QwenSync.SYNC_PERIOD_MS" in qsvc, "QwenSyncService period")
+assert_true("class QwenSyncService" in qsvc, "QwenSyncService class")
+
+app = read("app/src/main/java/ir/aai/hushyar/HushyarApp.kt")
+assert_true("QwenSyncService.ensure" in app, "HushyarApp ensures QwenSyncService")
+assert_true("qwen_batch_bb9e0626.json" in app, "HushyarApp seeds batch from assets")
+
+mf = read("app/src/main/AndroidManifest.xml")
+assert_true("QwenSyncService" in mf, "Manifest declares QwenSyncService")
+
+ks = read("app/src/main/java/ir/aai/hushyar/ui/KnowledgeScreen.kt")
+assert_true("اسکنر آنلاین" in ks, "KnowledgeScreen shows scanner")
+assert_true("syncQwenNow" in ks or "همگام‌سازی" in ks, "KnowledgeScreen sync button")
+
+import pathlib as _pl, json as _json
+bpath = root / "app/src/main/assets/qwen_batch_bb9e0626.json"
+assert_true(bpath.exists(), "assets/qwen_batch_bb9e0626.json bundled")
+if bpath.exists():
+    bj = _json.loads(bpath.read_text(encoding="utf-8"))
+    assert_true(bj.get("format") == "qwen-knowledge-v1", "batch format qwen-knowledge-v1")
+    assert_true(bj.get("batch", {}).get("id") == "bb9e0626-ef04-4c81-a715-d494045b7a77", "batch id matches link")
+    assert_true(len(bj.get("items", [])) == 242, f"batch items 242 (got {len(bj.get('items', []))})")
+    assert_true(bj.get("chunker", {}).get("target_chars") == 900, "batch chunker 900")
+    assert_true(bj.get("chunker", {}).get("overlap_chars") == 140, "batch overlap 140")
+    assert_true(bj.get("retrieval_hint", {}).get("weights", {}).get("topicMatch") == 0.45, "batch retrieval_hint weights")
+
 if errors:
     print(f"\nFAILED — {len(errors)} check(s) red.", file=sys.stderr)
     sys.exit(1)
 else:
-    print(f"\nGREEN — all checks pass ({len(uniq)} engines, 19 families, 15 fields, chunk 900/140).")
+    print(f"\nGREEN — all checks pass ({len(uniq)} engines, 19 families, 15 fields, chunk 900/140, QwenSync 242).")

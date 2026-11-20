@@ -24,6 +24,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalContext
 import ir.aai.hushyar.AppViewModel
 import ir.aai.hushyar.core.Text as Txt
 import ir.aai.hushyar.domain.IronKnowledge
@@ -53,16 +54,33 @@ fun KnowledgeScreen(vm: AppViewModel) {
             }
         }
 
-        // دیتابیس آفلاین IronPin
+        // دیتابیس آفلاین IronPin — دانشِ خودِ اپ (باقی می‌ماند)
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("دیتابیس آفلاین آهن‌آلات (IronPin)", style = MaterialTheme.typography.titleSmall)
-                Text("۱۸ خانواده: ورق، میلگرد، میلگرد بستر، تیرآهن، نبشی، ناودانی، سپری، پروفیل/قوطی، لوله، بولت/انکر، تسمه، چهارپهلو، مفتول، مش جوشی، توری، رابیتس، شمش، قراضه — با مالیات، واحدها، فرمول وزن، کاربرد.", style = MaterialTheme.typography.bodySmall)
+                Text("۱۸ خانواده: ورق، میلگرد، میلگرد بستر، تیرآهن، نبشی، ناودانی، سپری، پروفیل/قوطی، لوله، بولت/انکر، تسمه، چهارپهلو، مفتول، مش جوشی، توری، رابیتس، شمش، قراضه — با مالیات، واحدها، فرمول وزن، کاربرد. این دانشِ خودِ اپ است و همیشه می‌ماند.", style = MaterialTheme.typography.bodySmall)
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = { vm.seedIronKnowledge() }, modifier = Modifier.weight(1f)) { Text("بارگذاری دیتابیس آفلاین") }
                     OutlinedButton(onClick = { vm.reseedIronKnowledge() }, modifier = Modifier.weight(1f)) { Text("بازنصب دیتابیس") }
                 }
                 Text("یک‌بار کافی است؛ دفعات بعد فقط بازنصب برای به‌روزرسانی.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+
+        // اسکنر آنلاین Qwen — دقیقِ روش Qwen، هر ۲۴ ساعت به‌روز
+        val ctx = LocalContext.current
+        Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
+            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("اسکنر آنلاین — دانشِ قیمتِ روز (Qwen)", style = MaterialTheme.typography.titleSmall)
+                Text("۲ موضوعِ اسکن‌شده: قیمت میلگرد (۱۴۳ نکته) + قیمت تیرآهن (۹۹ نکته) = ۲۴۲ نکته. چانک ۹۰۰/۱۴۰، روش lexical-scoredِ Qwen — دقیقاً همانِ QwenRag اپ.", style = MaterialTheme.typography.bodySmall)
+                Text(vm.qwenSyncStatus(), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("بررسی متد: ${vm.qwenVerifyFromBundle(ctx)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("منبع: https://qwen.alisport0.qzz.io/report/batch/bb9e0626-ef04-4c81-a715-d494045b7a77 — اپ هر ۲۴ ساعت خودکار به‌روز می‌کند (JobScheduler، بدون مجوز اضافه).", style = MaterialTheme.typography.labelSmall)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { vm.syncQwenNow(ctx) }, modifier = Modifier.weight(1f), enabled = !vm.loading) { Text("همگام‌سازی اکنون") }
+                    OutlinedButton(onClick = { vm.syncQwenFromAssets(ctx) }, modifier = Modifier.weight(1f), enabled = !vm.loading) { Text("از باندل آفلاین") }
+                }
+                Text("دانشِ خودِ اپ دست‌نخورده می‌ماند؛ این دانش دقیقاً اضافه و هر ۲۴ ساعت نوسازی می‌شود.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
 

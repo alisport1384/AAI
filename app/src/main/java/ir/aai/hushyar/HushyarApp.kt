@@ -21,5 +21,15 @@ class HushyarApp : Application() {
         repos.log("app", "system", "اجرای اپ", "نسخه ${BuildConfig.VERSION_NAME}")
         // Keep the "explore without being asked" job registered; it is idempotent.
         ProactiveJobService.ensure(this)
+        // دانشِ اسکنر Qwen: هر ۲۴ ساعت دقیقاً همان JSONِ روش Qwen را به‌روز کن
+        // (دانشِ خودِ اپ دست‌نخورده می‌ماند؛ فقط اضافه/refresh می‌شود)
+        ir.aai.hushyar.data.QwenSyncService.ensure(this)
+        // سیدِ اولیهٔ آفلاینِ بَچِ اسکنر (همراهِ APK) — یک‌بار، آفلاین، بدون اینترنت
+        if (ir.aai.hushyar.domain.QwenSync.needsSeed(repos)) {
+            runCatching {
+                val json = assets.open("qwen_batch_bb9e0626.json").bufferedReader().readText()
+                ir.aai.hushyar.domain.QwenSync.importFromAssetsJson(json, repos)
+            }
+        }
     }
 }

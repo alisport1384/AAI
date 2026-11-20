@@ -850,6 +850,38 @@ class AppViewModel(
             notice = "دیتابیس بازنصب شد: $count نکته."
         }
     }
+
+    // ---------- Qwen اسکنر آنلاین: هر ۲۴ ساعت دقیقِ روشِ Qwen ----------
+    fun qwenSyncStatus(): String = ir.aai.hushyar.domain.QwenSync.statusLine(repos)
+    fun qwenVerifyFromBundle(context: android.content.Context): String {
+        return try {
+            val json = context.assets.open("qwen_batch_bb9e0626.json").bufferedReader().readText()
+            ir.aai.hushyar.domain.QwenSync.verify(json).report
+        } catch (e: Exception) { "فایل باندل یافت نشد: ${e.message}" }
+    }
+    fun syncQwenNow(context: android.content.Context) {
+        if (loading) return
+        io({
+            val json = try { context.assets.open("qwen_batch_bb9e0626.json").bufferedReader().readText() } catch (_: Exception) { null }
+            if (json != null && ir.aai.hushyar.domain.QwenSync.needsSeed(repos)) {
+                ir.aai.hushyar.domain.QwenSync.importFromAssetsJson(json, repos)
+            }
+            val res = ir.aai.hushyar.domain.QwenSync.fetchAndImport(repos, HttpUrlTransport())
+            res.getOrThrow()
+        }) { r ->
+            refreshSecondary()
+            notice = "همگام‌سازی Qwen: بَچ ${r.batchId} — ${r.totalItemsInBatch} نکته (${r.imported} تازه، ${r.refreshed} به‌روز). ${r.verification.report}"
+        }
+    }
+    fun syncQwenFromAssets(context: android.content.Context) {
+        io({
+            val json = context.assets.open("qwen_batch_bb9e0626.json").bufferedReader().readText()
+            ir.aai.hushyar.domain.QwenSync.importFromAssetsJson(json, repos)
+        }) { r ->
+            refreshSecondary()
+            notice = "دانشِ اسکنر از باندل اضافه شد: ${r.totalItemsInBatch} نکته. ${r.verification.report}"
+        }
+    }
     fun loggingSummary(): String = if (logging) "روشن — ${logLines.size} رویداد" else "خاموش"
     fun exportLogMarkdown() {
         io({
