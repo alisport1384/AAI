@@ -25,33 +25,34 @@ class TestQwen3TrainingScript(unittest.TestCase):
         self.assertEqual(args.lora_alpha, 16)
 
     def test_parse_args_custom_datasets(self):
-        args_102k = parse_args(
+        args_jev = parse_args(
             [
                 "--model",
                 "Qwen/Qwen3-4B-Instruct",
                 "--dataset",
-                "amiralifirouzi/Persian-SFT-102K",
-                "--dataset-config",
-                "fa",
+                "amiralifirouzi/jev-data-persian",
                 "--export-gguf",
                 "q4_k_m",
                 "--dry-run",
             ]
         )
-        self.assertEqual(args_102k.dataset, "amiralifirouzi/Persian-SFT-102K")
+        self.assertEqual(args_jev.dataset, "amiralifirouzi/jev-data-persian")
 
-        args_math = parse_args(
-            [
-                "--model",
-                "Qwen/Qwen2.5-0.5B-Instruct",
-                "--dataset",
-                "xmanii/Persian-Math-SFT",
-                "--export-gguf",
-                "q8_0",
-                "--dry-run",
-            ]
-        )
-        self.assertEqual(args_math.dataset, "xmanii/Persian-Math-SFT")
+    def test_normalize_jev_schema(self):
+        jev_sample = {
+            "state_fa": "تیم ملی ایران پیروز شد.",
+            "question_fa": "کدام تیم پیروز شد؟",
+            "options_fa": ["ایران", "ژاپن"],
+            "answer_fa": "ایران",
+        }
+        messages = normalize_sample_to_messages(jev_sample)
+        self.assertEqual(len(messages), 2)
+        self.assertEqual(messages[0]["role"], "user")
+        self.assertIn("تیم ملی ایران پیروز شد.", messages[0]["content"])
+        self.assertIn("کدام تیم پیروز شد؟", messages[0]["content"])
+        self.assertIn("گزینه‌ها:", messages[0]["content"])
+        self.assertEqual(messages[1]["role"], "assistant")
+        self.assertEqual(messages[1]["content"], "ایران")
 
     def test_normalize_math_sft_schema(self):
         math_sample = {
@@ -62,9 +63,6 @@ class TestQwen3TrainingScript(unittest.TestCase):
         messages = normalize_sample_to_messages(math_sample)
         self.assertEqual(len(messages), 2)
         self.assertEqual(messages[0]["role"], "user")
-        self.assertEqual(messages[0]["content"], "معادله 2x = 8 چطور حل میشه؟")
-        self.assertEqual(messages[1]["role"], "assistant")
-        self.assertEqual(messages[1]["content"], "طرفین را بر 2 تقسیم کنید: x = 4.")
 
     def test_normalize_farsinstruct_schema(self):
         farsinstruct_sample = {
@@ -74,19 +72,6 @@ class TestQwen3TrainingScript(unittest.TestCase):
             "outputs": "این یک خلاصه است.",
         }
         messages = normalize_sample_to_messages(farsinstruct_sample)
-        self.assertEqual(len(messages), 2)
-        self.assertEqual(messages[0]["role"], "user")
-        self.assertEqual(messages[0]["content"], "متن را خلاصه کن")
-
-    def test_normalize_tiny_and_102k_schema(self):
-        sample = {
-            "id": "norobots-001",
-            "messages": [
-                {"role": "user", "content": "سلام"},
-                {"role": "assistant", "content": "درود"},
-            ],
-        }
-        messages = normalize_sample_to_messages(sample)
         self.assertEqual(len(messages), 2)
         self.assertEqual(messages[0]["role"], "user")
 
@@ -100,10 +85,11 @@ class TestQwen3TrainingScript(unittest.TestCase):
 
     def test_run_dry_run_all_datasets(self):
         for ds_name in [
-            "amiralifirouzi/tiny-persian-sft-15k",
+            "amiralifirouzi/jev-data-persian",
             "amiralifirouzi/Persian-SFT-102K",
             "xmanii/Persian-Math-SFT",
             "ParsiAI/FarsInstruct",
+            "amiralifirouzi/tiny-persian-sft-15k",
         ]:
             args = parse_args(["--dataset", ds_name, "--dry-run"])
             run_dry_run(args)

@@ -3,10 +3,11 @@
 train_qwen3_persian.py — Fine-tune Qwen 3 / Qwen 2.5 models on Persian SFT & Instruct datasets.
 
 Supported Datasets:
- - amiralifirouzi/tiny-persian-sft-15k (ChatML 'messages' format)
- - amiralifirouzi/Persian-SFT-102K (ChatML 'messages' format, 102k master dataset)
+ - amiralifirouzi/jev-data-persian (119k rows, Persian JEV benchmark & reasoning dataset)
+ - amiralifirouzi/Persian-SFT-102K (102k master dataset, ChatML 'messages' format)
  - xmanii/Persian-Math-SFT (Persian Math SFT, 'messages' or 'question'/'answer')
- - ParsiAI/FarsInstruct ('inputs' and 'outputs' format)
+ - ParsiAI/FarsInstruct (22.7M rows, 'inputs' and 'outputs' format)
+ - amiralifirouzi/tiny-persian-sft-15k (ChatML 'messages' format)
  - Standard Alpaca / Instruction datasets ('instruction', 'input', 'output' format)
  - Any local JSON / JSONL files
 
@@ -17,8 +18,8 @@ Target Models:
  - unsloth/Qwen2.5-1.5B-Instruct
 
 Features:
- - Automatic schema normalization: seamlessly handles 'messages', 'inputs'/'outputs', 'question'/'answer', and 'instruction'/'output'.
- - Configurable dataset subsets (e.g. 'fa', 'fa_replay' for Persian-SFT-102K and tiny-persian-sft-15k; 'default', 'pn_sum', 'persian_qa' for FarsInstruct).
+ - Automatic schema normalization: seamlessly handles 'messages', 'question_fa'/'answer_fa', 'inputs'/'outputs', 'question'/'answer', and 'instruction'/'output'.
+ - Configurable dataset subsets (e.g. 'default', 'fa', 'fa_replay', 'pn_sum', 'persian_qa', etc.).
  - Max samples capping (--max-samples) for efficient training on massive datasets.
  - Official Qwen ChatML template formatting (<|im_start|>role\ncontent<|im_end|>).
  - Loss masking on user instructions (train_on_responses_only).
@@ -27,17 +28,15 @@ Features:
  - Dry-run verification mode.
 
 Usage:
-  # Fast dry-run check on Persian-SFT-102K:
-  python3 scripts/train_qwen3_persian.py --dataset amiralifirouzi/Persian-SFT-102K --dry-run
+  # Fast dry-run check on jev-data-persian:
+  python3 scripts/train_qwen3_persian.py --dataset amiralifirouzi/jev-data-persian --dry-run
 
-  # Fast dry-run check on Persian-Math-SFT:
-  python3 scripts/train_qwen3_persian.py --dataset xmanii/Persian-Math-SFT --dry-run
-
-  # Full Fine-tuning on Persian-Math-SFT:
+  # Full Fine-tuning on jev-data-persian with max 50,000 samples:
   python3 scripts/train_qwen3_persian.py \
       --model Qwen/Qwen2.5-0.5B-Instruct \
-      --dataset xmanii/Persian-Math-SFT \
-      --output-dir ./qwen3-math-lora \
+      --dataset amiralifirouzi/jev-data-persian \
+      --max-samples 50000 \
+      --output-dir ./qwen3-jev-lora \
       --epochs 1 \
       --export-gguf q4_k_m
 """
@@ -51,7 +50,7 @@ from pathlib import Path
 
 def parse_args(args=None):
     parser = argparse.ArgumentParser(
-        description="Fine-tune Qwen 3 / Qwen 2.5 on Persian Datasets (Persian-SFT-102K, Persian-Math-SFT, FarsInstruct, tiny-persian-sft-15k)"
+        description="Fine-tune Qwen 3 / Qwen 2.5 on Persian Datasets (jev-data-persian, Persian-SFT-102K, Persian-Math-SFT, FarsInstruct, tiny-persian-sft-15k)"
     )
     parser.add_argument(
         "--model",
@@ -63,7 +62,7 @@ def parse_args(args=None):
         "--dataset",
         type=str,
         default="amiralifirouzi/tiny-persian-sft-15k",
-        help="Hugging Face dataset identifier (e.g. amiralifirouzi/Persian-SFT-102K, xmanii/Persian-Math-SFT, ParsiAI/FarsInstruct, amiralifirouzi/tiny-persian-sft-15k) or local json/jsonl file path",
+        help="Hugging Face dataset identifier (e.g. amiralifirouzi/jev-data-persian, amiralifirouzi/Persian-SFT-102K, xmanii/Persian-Math-SFT, ParsiAI/FarsInstruct, amiralifirouzi/tiny-persian-sft-15k) or local json/jsonl file path",
     )
     parser.add_argument(
         "--dataset-config",
@@ -148,7 +147,7 @@ def parse_args(args=None):
 
 def normalize_sample_to_messages(sample):
     """
-    Normalizes different dataset schemas (messages, inputs/outputs, question/answer, instruction/output)
+    Normalizes different dataset schemas (messages, question_fa/answer_fa, inputs/outputs, question/answer, instruction/output)
     to a unified OpenAI ChatML messages list format.
     """
     if not isinstance(sample, dict):
@@ -158,7 +157,31 @@ def normalize_sample_to_messages(sample):
     if "messages" in sample and isinstance(sample["messages"], list) and len(sample["messages"]) > 0:
         return sample["messages"]
 
-    # 2. Format: 'inputs' and 'outputs' columns (ParsiAI/FarsInstruct)
+    # 2. Format: 'question_fa' and 'answer_fa' columns (amiralifirouzi/jev-data-persian)
+    if ("question_fa" in sample or "question" in sample) and ("answer_fa" in sample or "answer" in sample):
+        q = str(sample.get("question_fa") or sample.get("question") or "").strip()
+        a = str(sample.get("answer_fa") or sample.get("answer") or "").strip()
+        state = str(sample.get("state_fa") or sample.get("state") or "").strip()
+        options = sample.get("options_fa") or sample.get("options")
+
+        user_parts = []
+        if state:
+            user_parts.append(state)
+        if q:
+            user_parts.append(q)
+        if isinstance(options, list) and len(options) > 0:
+            opts_str = "\n".join(f"{idx+1}. {opt}" for idx, opt in enumerate(options) if opt)
+            if opts_str:
+                user_parts.append(f"گزینه‌ها:\n{opts_str}")
+
+        user_text = "\n\n".join(user_parts).strip()
+        if user_text and a:
+            return [
+                {"role": "user", "content": user_text},
+                {"role": "assistant", "content": a},
+            ]
+
+    # 3. Format: 'inputs' and 'outputs' columns (ParsiAI/FarsInstruct)
     if "inputs" in sample and "outputs" in sample:
         inp = str(sample["inputs"] or "").strip()
         out = str(sample["outputs"] or "").strip()
@@ -168,7 +191,7 @@ def normalize_sample_to_messages(sample):
                 {"role": "assistant", "content": out},
             ]
 
-    # 3. Format: 'question' and 'answer' columns (Persian-Math-SFT fallback)
+    # 4. Format: 'question' and 'answer' columns (Persian-Math-SFT fallback)
     if "question" in sample and "answer" in sample:
         q = str(sample["question"] or "").strip()
         a = str(sample["answer"] or "").strip()
@@ -178,7 +201,7 @@ def normalize_sample_to_messages(sample):
                 {"role": "assistant", "content": a},
             ]
 
-    # 4. Format: 'instruction', 'input', 'output' columns (Alpaca / standard instruction)
+    # 5. Format: 'instruction', 'input', 'output' columns (Alpaca / standard instruction)
     if "instruction" in sample or "output" in sample:
         instruction = str(sample.get("instruction") or "").strip()
         inp_extra = str(sample.get("input") or "").strip()
@@ -195,7 +218,7 @@ def normalize_sample_to_messages(sample):
 
 def load_persian_dataset(dataset_name_or_path: str, config: str, max_samples: int = None):
     """
-    Loads Persian datasets (e.g. amiralifirouzi/Persian-SFT-102K, xmanii/Persian-Math-SFT, ParsiAI/FarsInstruct, amiralifirouzi/tiny-persian-sft-15k, or local files).
+    Loads Persian datasets (e.g. amiralifirouzi/jev-data-persian, amiralifirouzi/Persian-SFT-102K, xmanii/Persian-Math-SFT, ParsiAI/FarsInstruct, amiralifirouzi/tiny-persian-sft-15k, or local files).
     """
     if os.path.exists(dataset_name_or_path):
         print(f"==> Loading local dataset file: {dataset_name_or_path}")
@@ -232,7 +255,18 @@ def load_persian_dataset(dataset_name_or_path: str, config: str, max_samples: in
     except ImportError:
         print("! 'datasets' package not installed; generating synthetic preview sample for verification...")
         ds_lower = dataset_name_or_path.lower()
-        if "math" in ds_lower:
+        if "jev" in ds_lower:
+            return [
+                {
+                    "id": "jev-fa-00001",
+                    "state_fa": "احمد به بازار رفت تا برای خانه میوه بخرد.",
+                    "question_fa": "احمد به چه منظوری به بازار رفت؟",
+                    "options_fa": ["خرید میوه", "دیدار با دوست", "خرید لباس"],
+                    "answer_fa": "خرید میوه",
+                    "source": "jev-benchmark"
+                }
+            ]
+        elif "math" in ds_lower:
             return [
                 {
                     "question": "چطور می‌تونم معادله x + 3 = 7 رو حل کنم؟",
