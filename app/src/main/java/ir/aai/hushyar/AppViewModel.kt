@@ -151,6 +151,8 @@ class AppViewModel(
         private set
     var knowledge by mutableStateOf<List<KnowledgeItem>>(emptyList())
         private set
+    var totalKnowledgeCount by mutableStateOf(0)
+        private set
     var researchDepth by mutableStateOf("balanced")
         private set
 
@@ -866,11 +868,12 @@ class AppViewModel(
             if (json != null && ir.aai.hushyar.domain.QwenSync.needsSeed(repos)) {
                 ir.aai.hushyar.domain.QwenSync.importFromAssetsJson(json, repos)
             }
-            val res = ir.aai.hushyar.domain.QwenSync.fetchAndImport(repos, HttpUrlTransport())
+            // همگام‌سازیِ همه (بَچ 242 + اسکن بزرگ 4092) — با transport بزرگ 6MB
+            val res = ir.aai.hushyar.domain.QwenSync.fetchAllAndImport(repos, ir.aai.hushyar.domain.QwenSync.largeTransport())
             res.getOrThrow()
         }) { r ->
             refreshSecondary()
-            notice = "همگام‌سازی Qwen: بَچ ${r.batchId} — ${r.totalItemsInBatch} نکته (${r.imported} تازه، ${r.refreshed} به‌روز). ${r.verification.report}"
+            notice = "همگام‌سازی Qwen: ${r.totalItemsInBatch} نکته کل (${r.imported} تازه، ${r.refreshed} به‌روز). آخرین بَچ ${r.batchId}. ${r.verification.report}"
         }
     }
     fun syncQwenFromAssets(context: android.content.Context) {
@@ -1457,7 +1460,8 @@ class AppViewModel(
                 memory = repos.memoryAll(300),
                 events = repos.events(200),
                 backups = store.listBackups().map { it.name },
-                knowledge = repos.knowledgeAll(300),
+                knowledge = repos.knowledgeAll(2000),
+                totalKnowledge = repos.countKnowledge(),
                 depth = repos.researchDepth(),
                 planLines = plan.describe(progress.statuses()),
                 planRatio = plan.ratio(progress.statuses()),
@@ -1479,6 +1483,7 @@ class AppViewModel(
         val events: List<LogEvent>,
         val backups: List<String>,
         val knowledge: List<KnowledgeItem>,
+        val totalKnowledge: Int = 0,
         val depth: String,
         val planLines: List<String> = emptyList(),
         val planRatio: Double = 0.0,
@@ -1495,6 +1500,7 @@ class AppViewModel(
         events = snapshot.events
         backupFiles = snapshot.backups
         knowledge = snapshot.knowledge
+        totalKnowledgeCount = snapshot.totalKnowledge
         researchDepth = snapshot.depth
         goals = snapshot.goals
         probes = snapshot.probes

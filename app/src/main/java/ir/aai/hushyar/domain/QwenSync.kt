@@ -22,6 +22,12 @@ object QwenSync {
 
     const val DEFAULT_BATCH_URL =
         "https://qwen.alisport0.qzz.io/api/report/batch/bb9e0626-ef04-4c81-a715-d494045b7a77"
+    /** اسکن بزرگ — 4092 نکته، 794 صفحه: منابع قیمت آهن — جستجوگر ۲ (همه دسته‌ها) */
+    const val DEFAULT_SCAN_URL =
+        "https://qwen.alisport0.qzz.io/api/report/8a4ba890-eab0-4890-9e4b-25713a984b36"
+    /** همهٔ بَچ/اسکن‌هایی که اپ هر ۲۴ ساعت باید بگیرد (کوچک + بزرگ) */
+    val ALL_SYNC_URLS = listOf(DEFAULT_BATCH_URL, DEFAULT_SCAN_URL)
+
     const val PREF_BATCH_URL = "qwen.batch.url"
     const val PREF_BATCH_ID = "qwen.batch.id"
     const val PREF_BATCH_UPDATED_AT = "qwen.batch.updated_at"
@@ -153,10 +159,13 @@ object QwenSync {
     fun importJson(json: String, repos: Repos, clock: Long = System.currentTimeMillis()): ImportResult {
         val verification = verify(json)
         val root = MiniJson.parse(json)
-        val batchId = root.fieldsOrEmpty["batch"]?.fieldsOrEmpty?.get("id")?.asStringOrNull()
-            ?: root.fieldsOrEmpty["batch"]?.fieldsOrEmpty?.get("id")?.asStringOrNull()
+        val batchObj = root.fieldsOrEmpty["batch"]?.fieldsOrEmpty
+        val scanObj = root.fieldsOrEmpty["scan"]?.fieldsOrEmpty
+        val batchId = batchObj?.get("id")?.asStringOrNull()
+            ?: scanObj?.get("id")?.asStringOrNull()
             ?: "unknown"
-        val updatedAt = root.fieldsOrEmpty["batch"]?.fieldsOrEmpty?.get("updated_at")?.asLongOrNull()
+        val updatedAt = batchObj?.get("updated_at")?.asLongOrNull()
+            ?: scanObj?.get("updated_at")?.asLongOrNull()
             ?: clock
         val items = root.fieldsOrEmpty["items"]?.itemsOrEmpty ?: emptyList()
         var imported = 0; var refreshed = 0; var ignored = 0
@@ -169,7 +178,7 @@ object QwenSync {
                 KnowledgeDecision.IGNORE -> ignored++
             }
         }
-        // ذخیره متادیتای بَچ
+        // ذخیره متادیتای بَچ — مجموعِ آخرین بَچ
         repos.putPreference(PREF_BATCH_ID, batchId)
         repos.putPreference(PREF_BATCH_UPDATED_AT, updatedAt.toString())
         repos.putPreference(PREF_LAST_SYNC, clock.toString())
@@ -179,6 +188,29 @@ object QwenSync {
         if (needsSeed(repos)) repos.putPreference(PREF_SEEDED_QWEN, "1")
         repos.log("qwen-sync", "system", "import batch=$batchId items=${items.size} new=$imported refreshed=$refreshed ignored=$ignored ${verification.report}", DEFAULT_BATCH_URL)
         return ImportResult(batchId, imported, refreshed, ignored, items.size, verification)
+    }
+
+    /** همگام‌سازیِ همهٔ URLهای اسکنر (بَچ 242 + اسکن بزرگ 4092) — برای 4319+ دانش */
+    fun fetchAllAndImport(
+        repos: Repos,
+        transport: HttpTransport,
+        urls: List<String> = ALL_SYNC_URLS,
+        clock: Long = System.currentTimeMillis()
+    ): Result<ImportResult> {
+        var last: ImportResult? = null
+        var firstError: Throwable? = null
+        var totalNew = 0; var totalRef = 0; var totalIgn = 0; var totalItems = 0
+        for (url in urls) {
+            val r = fetchAndImport(repos, transport, url, clock)
+            if (r.isSuccess) {
+                val v = r.getOrThrow()
+                last = v
+                totalNew += v.imported; totalRef += v.refreshed; totalIgn += v.ignored; totalItems += v.totalItemsInBatch
+            } else if (firstError == null) firstError = r.exceptionOrNull()
+        }
+        return if (last != null) Result.success(
+            ImportResult(last.batchId, totalNew, totalRef, totalIgn, totalItems, last.verification)
+        ) else Result.failure(firstError ?: IllegalStateException("هیچ بَچی دریافت نشد"))
     }
 
     /**
@@ -200,6 +232,9 @@ object QwenSync {
             Result.failure(t)
         }
     }
+
+    /** برای بَچ‌های بزرگ (4092 آیتم ~2MB) باید حدِ 800KB دور زده شود */
+    fun largeTransport(): HttpTransport = ir.aai.hushyar.data.HttpUrlTransport(maxBytes = 6_000_000)
 
     /** خواندنِ فایلِ assets بدون نیاز به Android Context (برای تست JVM هم). */
     fun importFromAssetsJson(json: String, repos: Repos, clock: Long = System.currentTimeMillis()): ImportResult =

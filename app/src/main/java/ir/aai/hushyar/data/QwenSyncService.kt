@@ -28,7 +28,7 @@ class QwenSyncService : JobService() {
             try {
                 // اگر هنوز ۲۴ ساعت نگذشته، کاری نکن (idempotent)
                 if (QwenSync.shouldSync(app.repos)) {
-                    val result = QwenSync.fetchAndImport(app.repos, HttpUrlTransport())
+                    val result = QwenSync.fetchAllAndImport(app.repos, QwenSync.largeTransport())
                     result.onFailure { e ->
                         app.repos.log("qwen-sync", "system", "همگام‌سازی ۲۴ساعته ناموفق", e.message ?: e.javaClass.simpleName)
                         reschedule = true

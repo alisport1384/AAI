@@ -52,7 +52,7 @@ fun KnowledgeScreen(vm: AppViewModel) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(IronKnowledge.summary(), style = MaterialTheme.typography.bodyMedium)
                 Text(vm.knowledgeSummary(), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text("دانش ذخیره‌شده: ${Txt.numEn(vm.knowledge.size.toLong())} نکته", style = MaterialTheme.typography.labelSmall)
+                Text("دانش ذخیره‌شده: ${Txt.numEn(vm.totalKnowledgeCount.toLong())} نکته (نمایش ${vm.knowledge.size} اخیر)", style = MaterialTheme.typography.labelSmall)
             }
         }
 
@@ -145,9 +145,9 @@ fun KnowledgeScreen(vm: AppViewModel) {
         }
 
         // نمایش مختصر دانش (اختیاری)
-        Collapsible(title = "نمایش خلاصه دانش (اختیاری)", subtitle = "${vm.knowledge.size} نکته — برای اشکال‌زدایی") {
+        Collapsible(title = "نمایش خلاصه دانش (اختیاری)", subtitle = "${vm.totalKnowledgeCount} نکته کل — ${vm.knowledge.size} بارگذاری — برای اشکال‌زدایی") {
             if (vm.knowledge.isEmpty()) Body("هنوز دانشی ذخیره نشده — اول دیتابیس را بارگذاری کن یا تحقیق موضوعی انجام بده.")
-            else vm.knowledge.take(20).forEach { item ->
+            else vm.knowledge.take(100).forEach { item ->
                 Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
                     Column(Modifier.padding(8.dp)) {
                         Text(item.claim.take(160), style = MaterialTheme.typography.bodySmall)
