@@ -137,6 +137,19 @@ if bpath.exists():
     assert_true(bj.get("chunker", {}).get("target_chars") == 900, "batch chunker 900")
     assert_true(bj.get("chunker", {}).get("overlap_chars") == 140, "batch overlap 140")
     assert_true(bj.get("retrieval_hint", {}).get("weights", {}).get("topicMatch") == 0.45, "batch retrieval_hint weights")
+# Two extra batches (offline mirror) — all must match QwenRag chunker
+for bid, n in [("e2c2b990-4ddf-4af6-a86f-5fe05046d4ad", 1184), ("fca7b692-f23a-42e3-968a-a457203ad298", 548)]:
+    _p = root / f"app/src/main/assets/qwen_batch_{bid[:8]}.json"
+    assert_true(_p.exists(), f"assets/qwen_batch_{bid[:8]}.json bundled")
+    if _p.exists():
+        _j = _json.loads(_p.read_text(encoding="utf-8"))
+        assert_true(_j.get("format") == "qwen-knowledge-v1", f"batch {bid[:8]} format")
+        assert_true(_j.get("chunker", {}).get("target_chars") == 900, f"batch {bid[:8]} chunker 900")
+        assert_true(_j.get("chunker", {}).get("overlap_chars") == 140, f"batch {bid[:8]} overlap 140")
+        assert_true(len(_j.get("items", [])) == n, f"batch {bid[:8]} items {n} (got {len(_j.get('items', []))})")
+        # Online mirror fetch is advisory (network); skip hard fail in CI
+qs = read("app/src/main/java/ir/aai/hushyar/domain/QwenSync.kt")
+assert_true("qwen.alisport0.qzz.io" in qs, "QwenSync URLs present")
 
 if errors:
     print(f"\nFAILED — {len(errors)} check(s) red.", file=sys.stderr)

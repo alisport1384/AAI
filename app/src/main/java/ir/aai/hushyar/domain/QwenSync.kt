@@ -22,11 +22,13 @@ object QwenSync {
 
     const val DEFAULT_BATCH_URL =
         "https://qwen.alisport0.qzz.io/api/report/batch/bb9e0626-ef04-4c81-a715-d494045b7a77"
-    /** اسکن بزرگ — 4092 نکته، 794 صفحه: منابع قیمت آهن — جستجوگر ۲ (همه دسته‌ها) */
+    const val BATCH_E2C2 = "https://qwen.alisport0.qzz.io/api/report/batch/e2c2b990-4ddf-4af6-a86f-5fe05046d4ad"
+    const val BATCH_FCA7 = "https://qwen.alisport0.qzz.io/api/report/batch/fca7b692-f23a-42e3-968a-a457203ad298"
+    /** اسکن بزرگ — 4923 نکته: منابع قیمت آهن — جستجوگر ۲ (همه دسته‌ها) */
     const val DEFAULT_SCAN_URL =
         "https://qwen.alisport0.qzz.io/api/report/8a4ba890-eab0-4890-9e4b-25713a984b36"
-    /** همهٔ بَچ/اسکن‌هایی که اپ هر ۲۴ ساعت باید بگیرد (کوچک + بزرگ) */
-    val ALL_SYNC_URLS = listOf(DEFAULT_BATCH_URL, DEFAULT_SCAN_URL)
+    /** همهٔ بَچ/اسکن‌هایی که اپ هر ۲۴ ساعت باید بگیرد — دقیقا ۳ لینکی که دادی */
+    val ALL_SYNC_URLS = listOf(DEFAULT_BATCH_URL, BATCH_E2C2, BATCH_FCA7, DEFAULT_SCAN_URL)
 
     const val PREF_BATCH_URL = "qwen.batch.url"
     const val PREF_BATCH_ID = "qwen.batch.id"
@@ -233,8 +235,8 @@ object QwenSync {
         }
     }
 
-    /** برای بَچ‌های بزرگ (4092 آیتم ~2MB) باید حدِ 800KB دور زده شود */
-    fun largeTransport(): HttpTransport = ir.aai.hushyar.data.HttpUrlTransport(maxBytes = 6_000_000)
+    /** برای بَچ‌های بزرگ (1184+548+4923 ~3-7MB) باید حدِ 800KB دور زده شود */
+    fun largeTransport(): HttpTransport = ir.aai.hushyar.data.HttpUrlTransport(maxBytes = 10_000_000)
 
     /** خواندنِ فایلِ assets بدون نیاز به Android Context (برای تست JVM هم). */
     fun importFromAssetsJson(json: String, repos: Repos, clock: Long = System.currentTimeMillis()): ImportResult =

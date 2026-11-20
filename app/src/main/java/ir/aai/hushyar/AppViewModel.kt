@@ -892,7 +892,7 @@ class AppViewModel(
                 items = repos.memoryAll(2000), events = repos.events(500),
                 audits = repos.auditsAll(500), packs = repos.packs(),
                 listingCount = repos.listings().size, generatedAt = System.currentTimeMillis(),
-                knowledge = repos.knowledgeAll(2000)
+                knowledge = repos.knowledgeAll(5000)
             )
             val file = store.writeLog("hushyar-log-${store.stamp()}", md)
             repos.log("log", "user", "خروجی لاگ .md", file.name)
@@ -1460,7 +1460,7 @@ class AppViewModel(
                 memory = repos.memoryAll(300),
                 events = repos.events(200),
                 backups = store.listBackups().map { it.name },
-                knowledge = repos.knowledgeAll(2000),
+                knowledge = repos.knowledgeAll(5000),
                 totalKnowledge = repos.countKnowledge(),
                 depth = repos.researchDepth(),
                 planLines = plan.describe(progress.statuses()),
@@ -1691,7 +1691,7 @@ class AppViewModel(
                 packs = repos.packs(),
                 listingCount = repos.listings().size,
                 generatedAt = System.currentTimeMillis(),
-                knowledge = repos.knowledgeAll(2000)
+                knowledge = repos.knowledgeAll(5000)
             )
             val file = store.writeLog("hushyar-brain-${store.stamp()}", md)
             repos.log("log", "user", "خروجی دفتر هوش", file.name)

@@ -82,10 +82,10 @@ fun KnowledgeScreen(vm: AppViewModel) {
         Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("اسکنر آنلاین — دانشِ قیمتِ روز (Qwen)", style = MaterialTheme.typography.titleSmall)
-                Text("۲ موضوعِ اسکن‌شده: قیمت میلگرد (۱۴۳ نکته) + قیمت تیرآهن (۹۹ نکته) = ۲۴۲ نکته. چانک ۹۰۰/۱۴۰، روش lexical-scoredِ Qwen — دقیقاً همانِ QwenRag اپ.", style = MaterialTheme.typography.bodySmall)
+                Text("۳ بَچ: لیست استقرار 242 + IronPin سایر 1184 (تسمه/چهارپهلو/مفتول/مش/توری/رابیتس/شمش/قراضه/بولت/لوله/DRI) + قیمت فولاد 548 (میلگرد/تیرآهن/ورق/پروفیل/نبشی/ناودانی) = ۱۹۸۵ نکته باندل + اسکن بزرگ 4923 = کل 6908. چانک 900/140، روش lexical-scoredِ Qwen — دقیقاً همانِ QwenRag اپ.", style = MaterialTheme.typography.bodySmall)
                 Text(qwenStatus, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text("بررسی متد: ${qwenVerify ?: "در حال بررسی…"}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text("منبع: https://qwen.alisport0.qzz.io/report/batch/bb9e0626-ef04-4c81-a715-d494045b7a77 — اپ هر ۲۴ ساعت خودکار به‌روز می‌کند (JobScheduler، بدون مجوز اضافه).", style = MaterialTheme.typography.labelSmall)
+                Text("۳ لینک: bb9e0626 (لیست استقرار) · e2c2b990 (سایر v2) · fca7b692 (قیمت فولاد) + اسکن 8a4ba890 — هر ۲۴ ساعت خودکار (JobScheduler، 10MB، بدون مجوز اضافه).", style = MaterialTheme.typography.labelSmall)
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = {
                         vm.syncQwenNow(ctx)
