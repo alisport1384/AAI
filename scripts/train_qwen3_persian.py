@@ -3,6 +3,7 @@
 train_qwen3_persian.py — Fine-tune Qwen 3 / Qwen 2.5 models on Persian & Multilingual Datasets.
 
 Supported Datasets:
+ - XYZAILab/XYZ-Aquila-SFT (7,000 multi-turn agent tool-use & search trajectories in 'trajectory' ChatML format)
  - nassimjp/Farsi-Reasoning-SFT (Farsi step-by-step reasoning with <think> traces)
  - frasalvi/debategpt (Conversational debate & persuasion dialogues)
  - DebateLabKIT/deep-argmap-conversations (604k structured argument mapping conversations)
@@ -22,8 +23,8 @@ Target Models:
  - unsloth/Qwen2.5-1.5B-Instruct
 
 Features:
- - Automatic schema normalization: seamlessly handles 'messages', 'translation', 'source'/'targets', 'inputs'/'outputs', 'question_fa'/'answer_fa', 'question'/'answer', and 'instruction'/'output'.
- - Configurable dataset subsets (e.g. 'en-fa' for opus-100; 'fa', 'fa_replay' for Persian-SFT-102K; 'default', 'pn_sum' for FarsInstruct).
+ - Automatic schema normalization: seamlessly handles 'trajectory', 'messages', 'translation', 'source'/'targets', 'inputs'/'outputs', 'question_fa'/'answer_fa', 'question'/'answer', and 'instruction'/'output'.
+ - Configurable dataset subsets (e.g. 'en', 'zh' for XYZ-Aquila-SFT; 'en-fa' for opus-100; 'fa', 'fa_replay' for Persian-SFT-102K; 'default', 'pn_sum' for FarsInstruct).
  - Max samples capping (--max-samples) for efficient training on massive multi-million datasets.
  - Official Qwen ChatML template formatting (<|im_start|>role\ncontent<|im_end|>).
  - Loss masking on user instructions (train_on_responses_only).
@@ -32,21 +33,19 @@ Features:
  - Dry-run verification mode.
 
 Usage:
-  # Fast dry-run check on Farsi-Reasoning-SFT:
-  python3 scripts/train_qwen3_persian.py --dataset nassimjp/Farsi-Reasoning-SFT --dry-run
+  # Fast dry-run check on XYZ-Aquila-SFT (en subset):
+  python3 scripts/train_qwen3_persian.py --dataset XYZAILab/XYZ-Aquila-SFT --dataset-config en --dry-run
 
-  # Fast dry-run check on parsinlu_translation_en_fa:
-  python3 scripts/train_qwen3_persian.py --dataset persiannlp/parsinlu_translation_en_fa --dry-run
+  # Fast dry-run check on XYZ-Aquila-SFT (zh subset):
+  python3 scripts/train_qwen3_persian.py --dataset XYZAILab/XYZ-Aquila-SFT --dataset-config zh --dry-run
 
-  # Fast dry-run check on opus-100 (en-fa):
-  python3 scripts/train_qwen3_persian.py --dataset Helsinki-NLP/opus-100 --dataset-config en-fa --dry-run
-
-  # Full Fine-tuning on Farsi-Reasoning-SFT:
+  # Full Fine-tuning on XYZ-Aquila-SFT:
   python3 scripts/train_qwen3_persian.py \
       --model Qwen/Qwen2.5-0.5B-Instruct \
-      --dataset nassimjp/Farsi-Reasoning-SFT \
-      --output-dir ./qwen3-reasoning-lora \
-      --epochs 2 \
+      --dataset XYZAILab/XYZ-Aquila-SFT \
+      --dataset-config en \
+      --output-dir ./qwen3-aquila-lora \
+      --epochs 1 \
       --export-gguf q4_k_m
 """
 
@@ -59,7 +58,7 @@ from pathlib import Path
 
 def parse_args(args=None):
     parser = argparse.ArgumentParser(
-        description="Fine-tune Qwen 3 / Qwen 2.5 on Persian & Multilingual Datasets (Farsi-Reasoning-SFT, debategpt, deep-argmap-conversations, parsinlu_translation_en_fa, opus-100, etc.)"
+        description="Fine-tune Qwen 3 / Qwen 2.5 on Persian & Multilingual Datasets (XYZ-Aquila-SFT, Farsi-Reasoning-SFT, debategpt, deep-argmap-conversations, parsinlu_translation_en_fa, opus-100, etc.)"
     )
     parser.add_argument(
         "--model",
@@ -77,7 +76,7 @@ def parse_args(args=None):
         "--dataset-config",
         type=str,
         default="default",
-        help="Dataset configuration split subset ('default', 'en-fa', 'fa', 'fa_replay', 'pn_sum', etc.)",
+        help="Dataset configuration split subset ('default', 'en', 'zh', 'en-fa', 'fa', 'fa_replay', 'pn_sum', etc.)",
     )
     parser.add_argument(
         "--max-samples",
@@ -156,17 +155,21 @@ def parse_args(args=None):
 
 def normalize_sample_to_messages(sample):
     """
-    Normalizes different dataset schemas (messages, translation, source/targets, inputs/outputs, question_fa/answer_fa, question/answer, instruction/output)
+    Normalizes different dataset schemas (trajectory, messages, translation, source/targets, inputs/outputs, question_fa/answer_fa, question/answer, instruction/output)
     to a unified OpenAI ChatML messages list format.
     """
     if not isinstance(sample, dict):
         return []
 
-    # 1. Format: 'messages' column (tiny-persian-sft-15k, Persian-SFT-102K, Farsi-Reasoning-SFT, deep-argmap-conversations, Persian-Math-SFT)
+    # 1. Format: 'trajectory' column (XYZAILab/XYZ-Aquila-SFT multi-turn tool trajectories)
+    if "trajectory" in sample and isinstance(sample["trajectory"], list) and len(sample["trajectory"]) > 0:
+        return sample["trajectory"]
+
+    # 2. Format: 'messages' column (tiny-persian-sft-15k, Persian-SFT-102K, Farsi-Reasoning-SFT, deep-argmap-conversations, Persian-Math-SFT)
     if "messages" in sample and isinstance(sample["messages"], list) and len(sample["messages"]) > 0:
         return sample["messages"]
 
-    # 2. Format: 'translation' dict (Helsinki-NLP/opus-100 format: {'en': '...', 'fa': '...'})
+    # 3. Format: 'translation' dict (Helsinki-NLP/opus-100 format: {'en': '...', 'fa': '...'})
     if "translation" in sample and isinstance(sample["translation"], dict):
         trans = sample["translation"]
         en_text = str(trans.get("en") or trans.get("source") or "").strip()
@@ -177,7 +180,7 @@ def normalize_sample_to_messages(sample):
                 {"role": "assistant", "content": fa_text},
             ]
 
-    # 3. Format: 'source' and 'targets' columns (persiannlp/parsinlu_translation_en_fa format)
+    # 4. Format: 'source' and 'targets' columns (persiannlp/parsinlu_translation_en_fa format)
     if "source" in sample and ("targets" in sample or "target" in sample):
         src = str(sample["source"] or "").strip()
         targets = sample.get("targets") or sample.get("target")
@@ -193,7 +196,7 @@ def normalize_sample_to_messages(sample):
                 {"role": "assistant", "content": tgt},
             ]
 
-    # 4. Format: 'question_fa' and 'answer_fa' columns (amiralifirouzi/jev-data-persian)
+    # 5. Format: 'question_fa' and 'answer_fa' columns (amiralifirouzi/jev-data-persian)
     if ("question_fa" in sample or "question" in sample) and ("answer_fa" in sample or "answer" in sample):
         q = str(sample.get("question_fa") or sample.get("question") or "").strip()
         a = str(sample.get("answer_fa") or sample.get("answer") or "").strip()
@@ -217,7 +220,7 @@ def normalize_sample_to_messages(sample):
                 {"role": "assistant", "content": a},
             ]
 
-    # 5. Format: 'inputs' and 'outputs' columns (ParsiAI/FarsInstruct)
+    # 6. Format: 'inputs' and 'outputs' columns (ParsiAI/FarsInstruct)
     if "inputs" in sample and "outputs" in sample:
         inp = str(sample["inputs"] or "").strip()
         out = str(sample["outputs"] or "").strip()
@@ -227,7 +230,7 @@ def normalize_sample_to_messages(sample):
                 {"role": "assistant", "content": out},
             ]
 
-    # 6. Format: 'prompt'/'response' or 'text'/'reply' columns (frasalvi/debategpt)
+    # 7. Format: 'prompt'/'response' or 'text'/'reply' columns (frasalvi/debategpt)
     if ("prompt" in sample or "text" in sample) and ("response" in sample or "reply" in sample):
         p = str(sample.get("prompt") or sample.get("text") or "").strip()
         r = str(sample.get("response") or sample.get("reply") or "").strip()
@@ -237,7 +240,7 @@ def normalize_sample_to_messages(sample):
                 {"role": "assistant", "content": r},
             ]
 
-    # 7. Format: 'question' and 'answer' columns (Persian-Math-SFT fallback)
+    # 8. Format: 'question' and 'answer' columns (Persian-Math-SFT fallback)
     if "question" in sample and "answer" in sample:
         q = str(sample["question"] or "").strip()
         a = str(sample["answer"] or "").strip()
@@ -247,7 +250,7 @@ def normalize_sample_to_messages(sample):
                 {"role": "assistant", "content": a},
             ]
 
-    # 8. Format: 'instruction', 'input', 'output' columns (Alpaca / standard instruction)
+    # 9. Format: 'instruction', 'input', 'output' columns (Alpaca / standard instruction)
     if "instruction" in sample or "output" in sample:
         instruction = str(sample.get("instruction") or "").strip()
         inp_extra = str(sample.get("input") or "").strip()
@@ -283,7 +286,9 @@ def load_persian_dataset(dataset_name_or_path: str, config: str, max_samples: in
 
         # Config handling for specific datasets
         cfg = None if config in ("default", "all", "none") else config
-        if dataset_name_or_path == "Helsinki-NLP/opus-100" and config == "default":
+        if dataset_name_or_path == "XYZAILab/XYZ-Aquila-SFT" and config == "default":
+            cfg = "en"
+        elif dataset_name_or_path == "Helsinki-NLP/opus-100" and config == "default":
             cfg = "en-fa"
         elif dataset_name_or_path in ("amiralifirouzi/tiny-persian-sft-15k", "amiralifirouzi/Persian-SFT-102K") and config == "default":
             cfg = "fa"
@@ -303,7 +308,22 @@ def load_persian_dataset(dataset_name_or_path: str, config: str, max_samples: in
     except ImportError:
         print("! 'datasets' package not installed; generating synthetic preview sample for verification...")
         ds_lower = dataset_name_or_path.lower()
-        if "reasoning" in ds_lower:
+        if "aquila" in ds_lower:
+            return [
+                {
+                    "question": "Search for the latest news on AI agents.",
+                    "answer": "AI agents are advancing rapidly with multi-tool capabilities.",
+                    "number of tool calls": 1,
+                    "trajectory": [
+                        {"role": "system", "content": "You are an AI assistant with search tools."},
+                        {"role": "user", "content": "Search for the latest news on AI agents."},
+                        {"role": "assistant", "content": "Let me search using web_search tool."},
+                        {"role": "user", "content": "Observation: Recent breakthrough in multi-turn reasoning."},
+                        {"role": "assistant", "content": "AI agents are advancing rapidly with multi-tool capabilities."}
+                    ]
+                }
+            ]
+        elif "reasoning" in ds_lower:
             return [
                 {
                     "messages": [
