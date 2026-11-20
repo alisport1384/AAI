@@ -151,8 +151,21 @@ for bid, n in [("e2c2b990-4ddf-4af6-a86f-5fe05046d4ad", 1184), ("fca7b692-f23a-4
 qs = read("app/src/main/java/ir/aai/hushyar/domain/QwenSync.kt")
 assert_true("qwen.alisport0.qzz.io" in qs, "QwenSync URLs present")
 
+# 10. Qwen3 Training Pipeline & Documentation
+tr = read("scripts/train_qwen3_persian.py")
+assert_true("amiralifirouzi/tiny-persian-sft-15k" in tr, "train script target dataset")
+assert_true("Qwen/Qwen2.5-0.5B-Instruct" in tr, "train script model option")
+assert_true("format_messages_sample" in tr, "train script ChatML formatter")
+assert_true("run_dry_run" in tr, "train script dry-run option")
+assert_true("export-gguf" in tr, "train script GGUF export option")
+
+tr_doc = read("docs/QWEN3-FINETUNING.md")
+assert_true("tiny-persian-sft-15k" in tr_doc, "Qwen3 finetuning doc dataset")
+assert_true("Qwen 3" in tr_doc, "Qwen3 finetuning doc title")
+assert_true("train_qwen3_persian.py" in tr_doc, "Qwen3 finetuning doc script reference")
+
 if errors:
     print(f"\nFAILED — {len(errors)} check(s) red.", file=sys.stderr)
     sys.exit(1)
 else:
-    print(f"\nGREEN — all checks pass ({len(uniq)} engines, 19 families, 15 fields, chunk 900/140, QwenSync 242).")
+    print(f"\nGREEN — all checks pass ({len(uniq)} engines, 19 families, 15 fields, chunk 900/140, QwenSync 242, Qwen3 SFT script).")
