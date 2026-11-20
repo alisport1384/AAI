@@ -1,30 +1,40 @@
 #!/usr/bin/env python3
 """
-train_qwen3_persian.py — Fine-tune Qwen 3 / Qwen 2.5 models on amiralifirouzi/tiny-persian-sft-15k dataset.
+train_qwen3_persian.py — Fine-tune Qwen 3 / Qwen 2.5 models on Persian SFT & Instruct datasets.
 
-Dataset Repository: https://huggingface.co/datasets/amiralifirouzi/tiny-persian-sft-15k
-Target Models: Qwen/Qwen3-4B-Instruct, Qwen/Qwen2.5-0.5B-Instruct, Qwen/Qwen2.5-1.5B-Instruct, unsloth/Qwen2.5-1.5B-Instruct
+Supported Datasets:
+ - amiralifirouzi/tiny-persian-sft-15k (ChatML 'messages' format)
+ - ParsiAI/FarsInstruct ('inputs' and 'outputs' format)
+ - Standard Alpaca / Instruction datasets ('instruction', 'input', 'output' format)
+ - Any local JSON / JSONL files
+
+Target Models:
+ - Qwen/Qwen3-4B-Instruct
+ - Qwen/Qwen2.5-0.5B-Instruct
+ - Qwen/Qwen2.5-1.5B-Instruct
+ - unsloth/Qwen2.5-1.5B-Instruct
 
 Features:
- - Loads Hugging Face datasets (`amiralifirouzi/tiny-persian-sft-15k`) or local JSON / JSONL files.
- - Configurable split subsets: 'fa' (12k Persian SFT samples), 'fa_replay' (3k English replay), or 'all'.
- - Processes OpenAI ChatML `messages` format: [{"role": "user"|"assistant"|"system", "content": "..."}].
- - Utilizes official Qwen chat template formatting (`<|im_start|>role\ncontent<|im_end|>`).
- - Applies loss masking on prompt instructions (`train_on_responses_only`).
- - Supports Unsloth QLoRA 4-bit / 16-bit LoRA fine-tuning for high memory efficiency.
- - Exports quantized GGUF format (q4_k_m, q8_0) for direct deployment to Hushyar Android app (llama.cpp).
- - Includes dry-run verification mode runnable in any environment without GPU / heavy dependencies.
+ - Automatic schema normalization: seamlessly handles 'messages', 'inputs'/'outputs', and 'instruction'/'output'.
+ - Configurable dataset subsets (e.g. 'fa', 'fa_replay' for tiny-persian-sft-15k; 'default', 'pn_sum', 'persian_qa' for FarsInstruct).
+ - Max samples capping (--max-samples) for efficient training on massive multi-million datasets like FarsInstruct.
+ - Official Qwen ChatML template formatting (<|im_start|>role\ncontent<|im_end|>).
+ - Loss masking on user instructions (train_on_responses_only).
+ - Fast Unsloth QLoRA 4-bit / 16-bit LoRA fine-tuning.
+ - Quantized GGUF export (q4_k_m, q8_0) for direct deployment to Hushyar Android app (llama.cpp).
+ - Dry-run verification mode.
 
 Usage:
-  # Fast dry-run check:
-  python3 scripts/train_qwen3_persian.py --dry-run
+  # Fast dry-run check on FarsInstruct:
+  python3 scripts/train_qwen3_persian.py --dataset ParsiAI/FarsInstruct --dry-run
 
-  # Full Fine-tuning execution:
+  # Full Fine-tuning on FarsInstruct with max 50,000 samples:
   python3 scripts/train_qwen3_persian.py \
       --model Qwen/Qwen2.5-0.5B-Instruct \
-      --dataset amiralifirouzi/tiny-persian-sft-15k \
-      --dataset-config fa \
-      --output-dir ./qwen3-persian-lora \
+      --dataset ParsiAI/FarsInstruct \
+      --dataset-config default \
+      --max-samples 50000 \
+      --output-dir ./qwen3-farsinstruct-lora \
       --epochs 1 \
       --export-gguf q4_k_m
 """
@@ -38,7 +48,7 @@ from pathlib import Path
 
 def parse_args(args=None):
     parser = argparse.ArgumentParser(
-        description="Fine-tune Qwen 3 / Qwen 2.5 on amiralifirouzi/tiny-persian-sft-15k"
+        description="Fine-tune Qwen 3 / Qwen 2.5 on Persian Datasets (tiny-persian-sft-15k, FarsInstruct, etc.)"
     )
     parser.add_argument(
         "--model",
@@ -50,14 +60,19 @@ def parse_args(args=None):
         "--dataset",
         type=str,
         default="amiralifirouzi/tiny-persian-sft-15k",
-        help="Hugging Face dataset identifier or local json/jsonl file path",
+        help="Hugging Face dataset identifier (e.g. ParsiAI/FarsInstruct, amiralifirouzi/tiny-persian-sft-15k) or local json/jsonl file path",
     )
     parser.add_argument(
         "--dataset-config",
         type=str,
-        default="fa",
-        choices=["fa", "fa_replay", "all"],
-        help="Dataset configuration split subset ('fa' for Persian SFT, 'fa_replay' for English replay)",
+        default="default",
+        help="Dataset configuration split subset ('default', 'fa', 'pn_sum', 'persian_qa', etc.)",
+    )
+    parser.add_argument(
+        "--max-samples",
+        type=int,
+        default=None,
+        help="Maximum number of dataset samples to use for training (useful for massive datasets like FarsInstruct)",
     )
     parser.add_argument(
         "--max-seq-length",
@@ -128,9 +143,46 @@ def parse_args(args=None):
     return parser.parse_args(args)
 
 
-def load_tiny_persian_dataset(dataset_name_or_path: str, config: str):
+def normalize_sample_to_messages(sample):
     """
-    Loads `amiralifirouzi/tiny-persian-sft-15k` dataset or local JSON file.
+    Normalizes different dataset schemas (messages, inputs/outputs, instruction/output)
+    to a unified OpenAI ChatML messages list format.
+    """
+    if not isinstance(sample, dict):
+        return []
+
+    # 1. Format: 'messages' column (tiny-persian-sft-15k)
+    if "messages" in sample and isinstance(sample["messages"], list):
+        return sample["messages"]
+
+    # 2. Format: 'inputs' and 'outputs' columns (ParsiAI/FarsInstruct)
+    if "inputs" in sample and "outputs" in sample:
+        inp = str(sample["inputs"] or "").strip()
+        out = str(sample["outputs"] or "").strip()
+        if inp and out:
+            return [
+                {"role": "user", "content": inp},
+                {"role": "assistant", "content": out},
+            ]
+
+    # 3. Format: 'instruction', 'input', 'output' columns (Alpaca / standard instruction)
+    if "instruction" in sample or "output" in sample:
+        instruction = str(sample.get("instruction") or "").strip()
+        inp_extra = str(sample.get("input") or "").strip()
+        output = str(sample.get("output") or "").strip()
+        user_text = f"{instruction}\n{inp_extra}".strip() if inp_extra else instruction
+        if user_text and output:
+            return [
+                {"role": "user", "content": user_text},
+                {"role": "assistant", "content": output},
+            ]
+
+    return []
+
+
+def load_persian_dataset(dataset_name_or_path: str, config: str, max_samples: int = None):
+    """
+    Loads Persian datasets (e.g. ParsiAI/FarsInstruct, amiralifirouzi/tiny-persian-sft-15k, or local files).
     """
     if os.path.exists(dataset_name_or_path):
         print(f"==> Loading local dataset file: {dataset_name_or_path}")
@@ -139,42 +191,60 @@ def load_tiny_persian_dataset(dataset_name_or_path: str, config: str):
                 data = [json.loads(line) for line in f if line.strip()]
             else:
                 data = json.load(f)
+        if max_samples and isinstance(data, list):
+            data = data[:max_samples]
         return data
 
     try:
         from datasets import load_dataset, concatenate_datasets
         print(f"==> Loading HuggingFace dataset: {dataset_name_or_path} (config={config})")
-        if config == "all":
+
+        # Config handling
+        cfg = None if config in ("default", "all", "none") else config
+        if dataset_name_or_path == "amiralifirouzi/tiny-persian-sft-15k" and config == "default":
+            cfg = "fa"
+
+        if config == "all" and dataset_name_or_path == "amiralifirouzi/tiny-persian-sft-15k":
             ds_fa = load_dataset(dataset_name_or_path, "fa", split="train")
             ds_replay = load_dataset(dataset_name_or_path, "fa_replay", split="train")
-            return concatenate_datasets([ds_fa, ds_replay])
+            ds = concatenate_datasets([ds_fa, ds_replay])
         else:
-            return load_dataset(dataset_name_or_path, config, split="train")
+            ds = load_dataset(dataset_name_or_path, cfg, split="train")
+
+        if max_samples and hasattr(ds, "select") and len(ds) > max_samples:
+            print(f"==> Subsampling dataset from {len(ds)} to {max_samples} samples...")
+            ds = ds.select(range(max_samples))
+
+        return ds
     except ImportError:
         print("! 'datasets' package not installed; generating synthetic preview sample for verification...")
-        sample_persian_sft = [
-            {
-                "id": "norobots-08386",
-                "task": "open qa",
-                "language": "fa",
-                "family": "qa",
-                "messages": [
-                    {"role": "user", "content": "بهترین کتاب پرفروش تمام دوران چیست؟"},
-                    {"role": "assistant", "content": "بیشترین کتاب پرفروش تاریخ، کتاب مقدس مسیحی است."}
-                ]
-            },
-            {
-                "id": "iron-sft-00001",
-                "task": "domain qa",
-                "language": "fa",
-                "family": "iron",
-                "messages": [
-                    {"role": "user", "content": "ضخامت ورق گالوانیزه استاندارد چیست؟"},
-                    {"role": "assistant", "content": "ضخامت استاندارد ورق گالوانیزه بین ۰.۴ تا ۲.۵ میلی‌متر متغیر است."}
-                ]
-            }
-        ]
-        return sample_persian_sft
+        if "FarsInstruct" in dataset_name_or_path or "farsinstruct" in dataset_name_or_path.lower():
+            return [
+                {
+                    "dataset": "pn_summary",
+                    "template": "gen_article_with_summary",
+                    "inputs": "خلاصه داده شده را با دقت مطالعه کن و آن را در قالب یک مقاله کامل بسط بده",
+                    "outputs": "فریده روشن در گفت وگو با خبرنگار ایمنا با اشاره به دستاوردهای نشست..."
+                },
+                {
+                    "dataset": "parsinlu_translation_en_fa",
+                    "template": "which_farsi_english",
+                    "inputs": "این متن به کدامیک از زبان های فارسی یا انگلیسی نوشته شده است؟ متن: می بینی که. زبان متن:",
+                    "outputs": "فارسی"
+                }
+            ]
+        else:
+            return [
+                {
+                    "id": "norobots-08386",
+                    "task": "open qa",
+                    "language": "fa",
+                    "messages": [
+                        {"role": "user", "content": "بهترین کتاب پرفروش تمام دوران چیست؟"},
+                        {"role": "assistant", "content": "بیشترین کتاب پرفروش تاریخ، کتاب مقدس مسیحی است."}
+                    ]
+                }
+            ]
 
 
 def format_messages_sample(sample_messages):
@@ -198,22 +268,26 @@ def run_dry_run(args):
     print("==========================================================")
     print(f"  Target Model   : {args.model}")
     print(f"  Target Dataset : {args.dataset} (config={args.dataset_config})")
+    print(f"  Max Samples    : {args.max_samples if args.max_samples else 'All'}")
     print(f"  Output Dir     : {args.output_dir}")
     print(f"  Max Seq Length : {args.max_seq_length}")
     print(f"  LoRA Config    : r={args.lora_r}, alpha={args.lora_alpha}")
     print("==========================================================")
 
     try:
-        ds = load_tiny_persian_dataset(args.dataset, args.dataset_config)
+        ds = load_persian_dataset(args.dataset, args.dataset_config, args.max_samples)
         sample_count = len(ds)
         print(f"✓ Dataset loaded successfully! Total samples available: {sample_count}")
 
         sample = ds[0] if isinstance(ds, list) else ds[0]
-        messages = sample["messages"]
-        print(f"✓ Sample ID          : {sample.get('id', 'N/A')}")
-        print(f"✓ Sample Task        : {sample.get('task', 'N/A')}")
-        print(f"✓ Sample Language    : {sample.get('language', 'N/A')}")
-        print(f"✓ Sample Messages    : {len(messages)} turns")
+        messages = normalize_sample_to_messages(sample)
+
+        if not messages:
+            print("❌ Error: Could not extract valid ChatML messages from dataset sample!", file=sys.stderr)
+            sys.exit(1)
+
+        print(f"✓ Original Columns   : {list(sample.keys())}")
+        print(f"✓ Schema Standardized : Converted to {len(messages)} ChatML turns")
         print("\n--- First Turn Preview ---")
         for turn in messages[:2]:
             role = turn.get("role", "")
@@ -265,7 +339,7 @@ def train(args):
             print("! Unsloth not installed; using standard HuggingFace PEFT / TRL.")
 
     # 1. Load Dataset
-    dataset = load_tiny_persian_dataset(args.dataset, args.dataset_config)
+    dataset = load_persian_dataset(args.dataset, args.dataset_config, args.max_samples)
 
     # 2. Load Model & Tokenizer
     if has_unsloth:
@@ -326,16 +400,22 @@ def train(args):
 
     # 3. Format Dataset with Chat Template
     def formatting_prompts_func(examples):
-        convos = examples["messages"]
-        texts = [
-            tokenizer.apply_chat_template(
-                convo,
-                tokenize=False,
-                add_generation_prompt=False,
-            )
-            for convo in convos
-        ]
-        return {"text": texts}
+        # Batch of rows
+        if isinstance(examples, dict):
+            keys = list(examples.keys())
+            num_rows = len(examples[keys[0]])
+            texts = []
+            for i in range(num_rows):
+                row = {k: examples[k][i] for k in keys}
+                msgs = normalize_sample_to_messages(row)
+                text = tokenizer.apply_chat_template(
+                    msgs,
+                    tokenize=False,
+                    add_generation_prompt=False,
+                )
+                texts.append(text)
+            return {"text": texts}
+        return {"text": []}
 
     if hasattr(dataset, "map"):
         formatted_dataset = dataset.map(formatting_prompts_func, batched=True)
