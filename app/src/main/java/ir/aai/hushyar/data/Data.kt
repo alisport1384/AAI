@@ -81,8 +81,6 @@ class Db(context: Context) : SQLiteOpenHelper(context, NAME, null, VERSION) {
             )"""
         )
         db.execSQL("CREATE INDEX idx_listing_norm ON listing(title_norm)")
-        db.execSQL("CREATE INDEX idx_knowledge_topic ON knowledge(topic)")
-        db.execSQL("CREATE INDEX idx_knowledge_verified ON knowledge(last_verified_at)")
         db.execSQL(MEMORY_TABLE)
         db.execSQL(EVENT_TABLE)
         db.execSQL(KNOWLEDGE_TABLE)
@@ -93,6 +91,9 @@ class Db(context: Context) : SQLiteOpenHelper(context, NAME, null, VERSION) {
         db.execSQL(CHAT_THREAD_TABLE)
         db.execSQL(CHAT_TURN_TABLE)
         db.execSQL(CHAT_TURN_INDEX)
+        // شاخص‌های دانش — بعدِ KNOWLEDGE_TABLE
+        runCatching { db.execSQL("CREATE INDEX idx_knowledge_topic ON knowledge(topic)") }
+        runCatching { db.execSQL("CREATE INDEX idx_knowledge_verified ON knowledge(last_verified_at)") }
         db.execSQL("CREATE TABLE preference(k TEXT PRIMARY KEY, v TEXT NOT NULL)")
         db.execSQL(
             """CREATE TABLE audit(
@@ -137,8 +138,13 @@ class Db(context: Context) : SQLiteOpenHelper(context, NAME, null, VERSION) {
             db.execSQL(CHAT_TURN_INDEX)
         }
         if (oldVersion < 7) {
-            db.execSQL("CREATE INDEX IF NOT EXISTS idx_knowledge_topic ON knowledge(topic)")
-            db.execSQL("CREATE INDEX IF NOT EXISTS idx_knowledge_verified ON knowledge(last_verified_at)")
+            // knowledge ممکن است در DB قدیمی نباشد — IF NOT EXISTS کافی نیست وقتی جدول نیست، پس runCatching
+            runCatching { db.execSQL("CREATE INDEX IF NOT EXISTS idx_knowledge_topic ON knowledge(topic)") }
+            runCatching { db.execSQL("CREATE INDEX IF NOT EXISTS idx_knowledge_verified ON knowledge(last_verified_at)") }
+            // اگر knowledge هنوز نیست (تستِ قدیمی با فقط memory)، بساز
+            runCatching { db.execSQL(KNOWLEDGE_TABLE) }
+            runCatching { db.execSQL("CREATE INDEX IF NOT EXISTS idx_knowledge_topic ON knowledge(topic)") }
+            runCatching { db.execSQL("CREATE INDEX IF NOT EXISTS idx_knowledge_verified ON knowledge(last_verified_at)") }
         }
     }
 
