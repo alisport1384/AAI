@@ -29,7 +29,7 @@ class HushyarApp : Application() {
         // سنگین است (1985 نکته: 242+1184+548) — هرگز روی تردِ اصلی نه، وگرنه صفحه سیاه/ANR می‌دهد
         if (ir.aai.hushyar.domain.QwenSync.needsSeed(repos)) {
             thread(name = "qwen-seed") {
-                for (name in listOf("qwen_batch_bb9e0626.json", "qwen_batch_e2c2b990.json", "qwen_batch_fca7b692.json")) {
+                for (name in listOf("ironpin_batch_master.json", "qwen_batch_bb9e0626.json", "qwen_batch_e2c2b990.json", "qwen_batch_fca7b692.json")) {
                     runCatching {
                         val json = assets.open(name).bufferedReader().readText()
                         ir.aai.hushyar.domain.QwenSync.importFromAssetsJson(json, repos)

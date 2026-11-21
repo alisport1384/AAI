@@ -24,11 +24,13 @@ object QwenSync {
         "https://qwen.alisport0.qzz.io/api/report/batch/bb9e0626-ef04-4c81-a715-d494045b7a77"
     const val BATCH_E2C2 = "https://qwen.alisport0.qzz.io/api/report/batch/e2c2b990-4ddf-4af6-a86f-5fe05046d4ad"
     const val BATCH_FCA7 = "https://qwen.alisport0.qzz.io/api/report/batch/fca7b692-f23a-42e3-968a-a457203ad298"
+    /** لینک اختصاصی و یکپارچه اسکنر آیرون پین */
+    const val DEFAULT_IRONPIN_BATCH_URL = "https://qwen.alisport0.qzz.io/api/report/batch/ironpin-master"
     /** اسکن بزرگ — 4923 نکته: منابع قیمت آهن — جستجوگر ۲ (همه دسته‌ها) */
     const val DEFAULT_SCAN_URL =
         "https://qwen.alisport0.qzz.io/api/report/8a4ba890-eab0-4890-9e4b-25713a984b36"
-    /** همهٔ بَچ/اسکن‌هایی که اپ هر ۲۴ ساعت باید بگیرد — دقیقا ۳ لینکی که دادی */
-    val ALL_SYNC_URLS = listOf(DEFAULT_BATCH_URL, BATCH_E2C2, BATCH_FCA7, DEFAULT_SCAN_URL)
+    /** همهٔ بَچ/اسکن‌هایی که اپ هر ۲۴ ساعت باید بگیرد */
+    val ALL_SYNC_URLS = listOf(DEFAULT_BATCH_URL, BATCH_E2C2, BATCH_FCA7, DEFAULT_SCAN_URL, DEFAULT_IRONPIN_BATCH_URL)
 
     const val PREF_BATCH_URL = "qwen.batch.url"
     const val PREF_BATCH_ID = "qwen.batch.id"
@@ -84,15 +86,20 @@ object QwenSync {
                 weights["confidence"]?.asDoubleOrNull() == 0.1 &&
                 hint["top_k"]?.asIntOrNull() == 4
 
-            val formatOk = format == "qwen-knowledge-v1"
-            val identical = formatOk && chunkMatch && retrievalMatch
+            val isIronPin = format == "ironpin-batch-v1"
+            val formatOk = format == "qwen-knowledge-v1" || isIronPin
+            val identical = formatOk && (isIronPin || (chunkMatch && retrievalMatch))
             val report = buildString {
                 append("format=").append(format ?: "?")
-                append(" chunker=").append(if (chunkMatch) "✓900/140/200" else "✗")
-                append(" retrieval=").append(if (retrievalMatch) "✓0.45/0.30/0.15/0.10 top4" else "✗")
-                append(" items=").append(items.size)
-                if (!identical) append(" — با متد Qwen یکسان نیست!")
-                else append(" — دقیقاً متد Qwen")
+                if (isIronPin) {
+                    append(" ironpin-batch=✓ items=").append(items.size)
+                } else {
+                    append(" chunker=").append(if (chunkMatch) "✓900/140/200" else "✗")
+                    append(" retrieval=").append(if (retrievalMatch) "✓0.45/0.30/0.15/0.10 top4" else "✗")
+                    append(" items=").append(items.size)
+                }
+                if (!identical) append(" — با متد Qwen/IronPin یکسان نیست!")
+                else append(" — دقیقاً متد Qwen/IronPin")
             }
             Verification(identical, report, chunkMatch, retrievalMatch, items.size)
         } catch (e: Exception) {
@@ -110,21 +117,34 @@ object QwenSync {
     /** نیاز به سیدِ اولیهٔ آفلاین؟ (اصلی‌ترین درخواست: دقیق به اپ اضافه شود) */
     fun needsSeed(repos: Repos): Boolean = repos.preference(PREF_SEEDED_QWEN) != "1"
 
-    /** تبدیلِ یک آیتمِ خامِ بَچ به KnowledgeItemِ دقیقِ اپ (بدون دوباره-چانک). */
+    /** تبدیلِ یک آیتمِ خامِ بَچ به KnowledgeItemِ دقیقِ اپ (پشتیبانی از Qwen RAG و IronPin Master). */
     fun toKnowledgeItem(raw: Json, clock: Long = System.currentTimeMillis()): KnowledgeItem? {
         val f = raw.fieldsOrEmpty
         val id = f["id"]?.asStringOrNull() ?: return null
-        val topicRaw = f["topic"]?.asStringOrNull() ?: return null
-        val claim = f["claim"]?.asStringOrNull() ?: return null
-        if (claim.isBlank()) return null
+
+        // IronPin specific fallbacks
+        val family = f["family"]?.asStringOrNull() ?: f["category"]?.asStringOrNull() ?: "iron"
+        val title = f["title"]?.asStringOrNull().orEmpty()
+        val seller = f["seller"]?.asStringOrNull().orEmpty()
+        val sellerCity = f["seller_city"]?.asStringOrNull().orEmpty()
+        val amountRaw = f["amount_raw"]?.asStringOrNull().orEmpty()
+        val sourceUrl = f["source_url"]?.asStringOrNull() ?: f["url"]?.asStringOrNull().orEmpty()
+
+        val topicRaw = f["topic"]?.asStringOrNull()
+            ?: if (title.isNotBlank()) "$family $title" else "آهن‌آلات $family"
+
+        val claim = f["claim"]?.asStringOrNull()
+            ?: if (title.isNotBlank()) "$title — $amountRaw — فروشنده: $seller ($sellerCity) — منبع: $sourceUrl" else null
+        if (claim.isNullOrBlank()) return null
+
         val question = f["question"]?.asStringOrNull() ?: topicRaw
-        val category = f["category"]?.asStringOrNull() ?: "rag"
-        val attribute = f["attribute"]?.asStringOrNull()
-        val url = f["url"]?.asStringOrNull().orEmpty()
-        val domain = f["domain"]?.asStringOrNull().orEmpty()
-        val confidence = f["confidence"]?.asDoubleOrNull() ?: 0.68
+        val category = f["category"]?.asStringOrNull() ?: family
+        val attribute = f["attribute"]?.asStringOrNull() ?: f["kind"]?.asStringOrNull()
+        val url = sourceUrl
+        val domain = f["domain"]?.asStringOrNull() ?: ir.aai.hushyar.core.Html.domainOf(url).orEmpty()
+        val confidence = f["confidence"]?.asDoubleOrNull() ?: 0.92
         val ttl = f["ttl_days"]?.asIntOrNull() ?: KnowledgeBank.DEFAULT_TTL_DAYS
-        val layer = f["layer"]?.asStringOrNull().orEmpty()
+        val layer = f["layer"]?.asStringOrNull() ?: f["specification"]?.asStringOrNull().orEmpty()
         val lastVerified = f["last_verified_at"]?.asLongOrNull() ?: clock
         val created = f["created_at"]?.asLongOrNull() ?: lastVerified
         val tagsJson = f["tags"]?.itemsOrEmpty?.mapNotNull { it.asStringOrNull() } ?: emptyList()
@@ -150,7 +170,7 @@ object QwenSync {
             ttlDays = ttl,
             sourceCount = 1,
             layer = layer,
-            tags = (tagsJson + listOf("qwen-sync", "scanner:$topicRaw")).distinct().take(16)
+            tags = (tagsJson + listOf("qwen-sync", "ironpin", "scanner:$topicRaw")).distinct().take(16)
         )
     }
 
